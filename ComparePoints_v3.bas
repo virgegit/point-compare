@@ -2,15 +2,19 @@ Attribute VB_Name = "ComparePoints"
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 ' ComparePoints – Excel VBA macro
 ' Compares two sheets of measurement points.
-' Settings are read from sheet "⚙ Настройки".
+' Settings are read from the config sheet.
 ' Version: 3.1  |  April 2026
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 Option Explicit
 
-' ── Read settings from Config sheet ─────────────────────
+' ── Read settings from the config sheet ─────────────────────
 Function CfgStr(key As String) As String
     Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets("⚙ Настройки")
+    Set ws = GetConfigSheet(ThisWorkbook)
+    If ws Is Nothing Then
+        CfgStr = ""
+        Exit Function
+    End If
     Dim i As Long
     For i = 1 To 200
         If CStr(ws.Cells(i, 2).Value) = key Then
@@ -84,8 +88,8 @@ Sub ComparePoints()
     Application.Calculation = xlCalculationManual
     Dim t0 As Double: t0 = Timer
 
-    Dim sh1     As String:  sh1    = CfgStr("SRC_SHEET1"):  If Len(sh1)=0    Then sh1 = "☕ Список 1"
-    Dim sh2     As String:  sh2    = CfgStr("SRC_SHEET2"):  If Len(sh2)=0    Then sh2 = "☕ Список 2"
+    Dim sh1     As String:  sh1    = CfgStr("SRC_SHEET1"):  If Len(sh1)=0    Then sh1 = "☕ Sheet 1"
+    Dim sh2     As String:  sh2    = CfgStr("SRC_SHEET2"):  If Len(sh2)=0    Then sh2 = "☕ Sheet 2"
     Dim hdrRow  As Long:    hdrRow = CLng(CfgStr("HDR_ROW")):If hdrRow=0 Then hdrRow = 5
     Dim tolXYZ  As Double:  tolXYZ  = CfgDbl("TOL_XYZ",  0.05)
     Dim tolIJK  As Double:  tolIJK  = CfgDbl("TOL_IJK",  0.001)
@@ -102,47 +106,51 @@ Sub ComparePoints()
     Dim cHdrFg As Long: cHdrFg  = PaletteColor("HEADER_FG",     RGB(255,255,255))
 
     Dim wb As Workbook: Set wb = ThisWorkbook
-    If Not SheetExists(wb, sh1) Then MsgBox "Лист '" & sh1 & "' не найден!", vbCritical: GoTo Cleanup
-    If Not SheetExists(wb, sh2) Then MsgBox "Лист '" & sh2 & "' не найден!", vbCritical: GoTo Cleanup
+    If GetConfigSheet(wb) Is Nothing Then MsgBox "Config sheet not found. Expected '⚙ Settings' or another sheet starting with '⚙'.", vbCritical: GoTo Cleanup
+    If Not SheetExists(wb, sh1) Then MsgBox "Sheet '" & sh1 & "' was not found.", vbCritical: GoTo Cleanup
+    If Not SheetExists(wb, sh2) Then MsgBox "Sheet '" & sh2 & "' was not found.", vbCritical: GoTo Cleanup
 
     Dim ws1 As Worksheet: Set ws1 = wb.Sheets(sh1)
     Dim ws2 As Worksheet: Set ws2 = wb.Sheets(sh2)
 
-    ' Column indices
-    Dim ci1_name As Long: ci1_name = ColIdx(ws1, hdrRow, CfgStr("Name_col1"))
-    Dim ci1_x As Long:    ci1_x    = ColIdx(ws1, hdrRow, CfgStr("X_col1"))
-    Dim ci1_y As Long:    ci1_y    = ColIdx(ws1, hdrRow, CfgStr("Y_col1"))
-    Dim ci1_z As Long:    ci1_z    = ColIdx(ws1, hdrRow, CfgStr("Z_col1"))
-    Dim ci1_i As Long:    ci1_i    = ColIdx(ws1, hdrRow, CfgStr("I_col1"))
-    Dim ci1_j As Long:    ci1_j    = ColIdx(ws1, hdrRow, CfgStr("J_col1"))
-    Dim ci1_k As Long:    ci1_k    = ColIdx(ws1, hdrRow, CfgStr("K_col1"))
+    ' Column indices: exact headers only
+    Dim ci1_name As Long: ci1_name = ColIdx(ws1, hdrRow, "Name")
+    Dim ci1_x As Long:    ci1_x    = ColIdx(ws1, hdrRow, "X")
+    Dim ci1_y As Long:    ci1_y    = ColIdx(ws1, hdrRow, "Y")
+    Dim ci1_z As Long:    ci1_z    = ColIdx(ws1, hdrRow, "Z")
+    Dim ci1_i As Long:    ci1_i    = ColIdx(ws1, hdrRow, "I")
+    Dim ci1_j As Long:    ci1_j    = ColIdx(ws1, hdrRow, "J")
+    Dim ci1_k As Long:    ci1_k    = ColIdx(ws1, hdrRow, "K")
 
-    If ci1_name=0 Then ci1_name=ColIdx(ws1,hdrRow,"Label")
-    If ci1_name=0 Then ci1_name=2
-    If ci1_x=0 Then ci1_x=ColIdx(ws1,hdrRow,"X"): If ci1_x=0 Then ci1_x=3
-    If ci1_y=0 Then ci1_y=ColIdx(ws1,hdrRow,"Y"): If ci1_y=0 Then ci1_y=4
-    If ci1_z=0 Then ci1_z=ColIdx(ws1,hdrRow,"Z"): If ci1_z=0 Then ci1_z=5
-    If ci1_i=0 Then ci1_i=ColIdx(ws1,hdrRow,"Vx")
-    If ci1_j=0 Then ci1_j=ColIdx(ws1,hdrRow,"Vy")
-    If ci1_k=0 Then ci1_k=ColIdx(ws1,hdrRow,"Vz")
+    Dim ci2_name As Long: ci2_name = ColIdx(ws2, hdrRow, "Name")
+    Dim ci2_x As Long:    ci2_x    = ColIdx(ws2, hdrRow, "X")
+    Dim ci2_y As Long:    ci2_y    = ColIdx(ws2, hdrRow, "Y")
+    Dim ci2_z As Long:    ci2_z    = ColIdx(ws2, hdrRow, "Z")
+    Dim ci2_i As Long:    ci2_i    = ColIdx(ws2, hdrRow, "I")
+    Dim ci2_j As Long:    ci2_j    = ColIdx(ws2, hdrRow, "J")
+    Dim ci2_k As Long:    ci2_k    = ColIdx(ws2, hdrRow, "K")
 
-    Dim ci2_name As Long: ci2_name = ColIdx(ws2, hdrRow, CfgStr("Name_col2"))
-    Dim ci2_x As Long:    ci2_x    = ColIdx(ws2, hdrRow, CfgStr("X_col2"))
-    Dim ci2_y As Long:    ci2_y    = ColIdx(ws2, hdrRow, CfgStr("Y_col2"))
-    Dim ci2_z As Long:    ci2_z    = ColIdx(ws2, hdrRow, CfgStr("Z_col2"))
-    Dim ci2_i As Long:    ci2_i    = ColIdx(ws2, hdrRow, CfgStr("I_col2"))
-    Dim ci2_j As Long:    ci2_j    = ColIdx(ws2, hdrRow, CfgStr("J_col2"))
-    Dim ci2_k As Long:    ci2_k    = ColIdx(ws2, hdrRow, CfgStr("K_col2"))
+    Dim missing1 As String
+    missing1 = MissingColsMsg(ci1_name, ci1_x, ci1_y, ci1_z, ci1_i, ci1_j, ci1_k)
+    If Len(missing1) > 0 Then
+        MsgBox "Required columns are missing on sheet '" & sh1 & "': " & missing1 & vbCrLf & _
+               "Expected exact names: Name, X, Y, Z, I, J, K. Fix the headers and run again.", _
+               vbExclamation, "Missing Required Columns"
+        GoTo Cleanup
+    End If
 
-    If ci2_name=0 Then ci2_name=ColIdx(ws2,hdrRow,"PointName")
-    If ci2_name=0 Then ci2_name=2
-    If ci2_x=0 Then ci2_x=ColIdx(ws2,hdrRow,"X_mm"): If ci2_x=0 Then ci2_x=3
-    If ci2_y=0 Then ci2_y=ColIdx(ws2,hdrRow,"Y_mm"): If ci2_y=0 Then ci2_y=4
-    If ci2_z=0 Then ci2_z=ColIdx(ws2,hdrRow,"Z_mm"): If ci2_z=0 Then ci2_z=5
+    Dim missing2 As String
+    missing2 = MissingColsMsg(ci2_name, ci2_x, ci2_y, ci2_z, ci2_i, ci2_j, ci2_k)
+    If Len(missing2) > 0 Then
+        MsgBox "Required columns are missing on sheet '" & sh2 & "': " & missing2 & vbCrLf & _
+               "Expected exact names: Name, X, Y, Z, I, J, K. Fix the headers and run again.", _
+               vbExclamation, "Missing Required Columns"
+        GoTo Cleanup
+    End If
 
     Dim n1 As Long: n1 = ws1.Cells(ws1.Rows.Count,ci1_name).End(xlUp).Row - hdrRow
     Dim n2 As Long: n2 = ws2.Cells(ws2.Rows.Count,ci2_name).End(xlUp).Row - hdrRow
-    If n1<=0 Or n2<=0 Then MsgBox "Нет данных!", vbExclamation: GoTo Cleanup
+    If n1<=0 Or n2<=0 Then MsgBox "No data found.", vbExclamation: GoTo Cleanup
 
     ReDim d1(1 To n1, 1 To 7) As Variant
     ReDim d2(1 To n2, 1 To 7) As Variant
@@ -189,7 +197,7 @@ Sub ComparePoints()
 
     wb.Sheets(outPfx & "Overview").Activate
     Dim elapsed As Double: elapsed = Round(Timer-t0,1)
-    MsgBox "Готово! " & nRes & " записей за " & elapsed & " сек.", vbInformation, "Сравнение завершено"
+    MsgBox "Done. " & nRes & " rows processed in " & elapsed & " sec.", vbInformation, "Comparison Complete"
 
 Cleanup:
     Application.ScreenUpdating = True
@@ -294,6 +302,27 @@ Sub CalcDiffs(d1() As Variant,i1 As Long,d2() As Variant,i2 As Long, _
     Next f
     res(nr,R_DIFF_FLD)=diffs
 End Sub
+
+Function MissingColsMsg(ciName As Long, ciX As Long, ciY As Long, ciZ As Long, _
+                        ciI As Long, ciJ As Long, ciK As Long) As String
+    Dim msg As String: msg = ""
+    If ciName = 0 Then msg = AppendMissing(msg, "Name")
+    If ciX = 0 Then msg = AppendMissing(msg, "X")
+    If ciY = 0 Then msg = AppendMissing(msg, "Y")
+    If ciZ = 0 Then msg = AppendMissing(msg, "Z")
+    If ciI = 0 Then msg = AppendMissing(msg, "I")
+    If ciJ = 0 Then msg = AppendMissing(msg, "J")
+    If ciK = 0 Then msg = AppendMissing(msg, "K")
+    MissingColsMsg = msg
+End Function
+
+Function AppendMissing(msg As String, item As String) As String
+    If Len(msg) = 0 Then
+        AppendMissing = item
+    Else
+        AppendMissing = msg & ", " & item
+    End If
+End Function
 
 Sub CopyF1(d() As Variant,idx As Long,res() As Variant,nr As Long)
     res(nr,R_F1_NAME)=d(idx,1):res(nr,R_F1_X)=d(idx,2):res(nr,R_F1_Y)=d(idx,3)
@@ -400,18 +429,18 @@ Sub WriteOverview(wb As Workbook,res() As Variant,nRes As Long, _
 
     ws.Range("B2:E2").Merge
     With ws.Range("B2")
-        .Value="Отчёт: сравнение точек":.Font.Name="Calibri":.Font.Size=16:.Font.Bold=True:.Font.Color=RGB(31,56,100)
+        .Value="Points Comparison Report":.Font.Name="Calibri":.Font.Size=16:.Font.Bold=True:.Font.Color=RGB(31,56,100)
     End With
     ws.Rows(2).RowHeight=28
     ws.Range("B3:E3").Merge
-    ws.Range("B3").Value="Лист 1: "&sh1&"   |   Лист 2: "&sh2&"   |   "&Format(Now,"YYYY-MM-DD HH:MM")
+    ws.Range("B3").Value="Sheet 1: "&sh1&"   |   Sheet 2: "&sh2&"   |   "&Format(Now,"YYYY-MM-DD HH:MM")
     ws.Range("B3").Font.Italic=True:ws.Range("B3").Font.Color=RGB(130,130,130)
     ws.Range("B4:E4").Merge
-    ws.Range("B4").Value="Точек в списке 1: "&n1&"   |   Точек в списке 2: "&n2&"   |   Допуск XYZ: "&tolXYZ&" мм"
+    ws.Range("B4").Value="Rows in sheet 1: "&n1&"   |   Rows in sheet 2: "&n2&"   |   XYZ tolerance: "&tolXYZ&" mm"
     ws.Range("B4").Font.Italic=True:ws.Range("B4").Font.Color=RGB(160,160,160)
 
     Dim hRow As Long: hRow=6
-    Dim hH As Variant: hH=Array("Статус","Кол-во","Цвет","Описание")
+    Dim hH As Variant: hH=Array("Status","Count","Color","Description")
     Dim c As Long
     For c=0 To 3
         With ws.Cells(hRow,c+2)
@@ -424,8 +453,8 @@ Sub WriteOverview(wb As Workbook,res() As Variant,nRes As Long, _
     Dim codes(4) As String
     codes(0)="MATCH":codes(1)="NAME_CHANGED":codes(2)="COORD_CHANGED":codes(3)="DELETED":codes(4)="ADDED"
     Dim lbls(4) As String
-    lbls(0)="✔ Совпадение":lbls(1)="✎ Изменилось имя"
-    lbls(2)="⚠ Изменились координаты":lbls(3)="✖ Удалена":lbls(4)="＋ Добавлена"
+    lbls(0)="✔ Match":lbls(1)="✎ Name Changed"
+    lbls(2)="⚠ Coordinates Changed":lbls(3)="✖ Deleted":lbls(4)="＋ Added"
 
     Dim r As Long
     For r=0 To 4
@@ -450,6 +479,23 @@ End Sub
 '===========================================================
 ' UTILITIES
 '===========================================================
+Function GetConfigSheet(wb As Workbook) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If ws.Name = "⚙ Settings" Then
+            Set GetConfigSheet = ws
+            Exit Function
+        End If
+    Next ws
+    For Each ws In wb.Worksheets
+        If Left$(ws.Name, 1) = "⚙" Then
+            Set GetConfigSheet = ws
+            Exit Function
+        End If
+    Next ws
+    Set GetConfigSheet = Nothing
+End Function
+
 Function SheetExists(wb As Workbook, nm As String) As Boolean
     Dim ws As Worksheet
     On Error Resume Next: Set ws=wb.Sheets(nm): On Error GoTo 0

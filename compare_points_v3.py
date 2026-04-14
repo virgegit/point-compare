@@ -2,10 +2,9 @@
 """
 compare_points_v3.py
 ====================
-Compares two lists of measurement points (Name, X, Y, Z, I, J, K).
-Input : two CSV files  OR  two sheets of the same / different Excel file.
-Output: styled Excel report with colour-coded sheets, diff details,
-        and a fully configurable colour palette.
+Compares two worksheets in one Excel workbook with measurement points
+(Name, X, Y, Z, I, J, K).
+Output: styled Excel sheets written back into the same workbook.
 
 Change-categories
 -----------------
@@ -18,7 +17,7 @@ Change-categories
 
 import pandas as pd
 import numpy as np
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -29,42 +28,16 @@ from datetime import datetime
 #  CONFIGURATION  – edit this section before running
 # ════════════════════════════════════════════════════════════════
 CONFIG = {
-    # ── Input ────────────────────────────────────────────────────
-    "file1":  "AB3_PMP_points.csv",
-    "sheet1": None,
-
-    "file2":  "Framer-3-Inline-PMPs-04082026-2.csv",
-    "sheet2": None,
-
-    # ── Column mapping for File 1 ──────────────────────────────
-    "col_map1": {
-        "Name": "Label",
-        "X":    "X",
-        "Y":    "Y",
-        "Z":    "Z",
-        "I":    "Vx",
-        "J":    "Vy",
-        "K":    "Vz",
-    },
-
-    # ── Column mapping for File 2 ──────────────────────────────
-    "col_map2": {
-        "Name": "PointName",
-        "X":    "X_mm",
-        "Y":    "Y_mm",
-        "Z":    "Z_mm",
-        "I":    None,
-        "J":    None,
-        "K":    None,
-    },
+    # ── Input workbook ──────────────────────────────────────────
+    "workbook_file": "PointsCompare_Template.xlsm",
+    "sheet1": "☕ Sheet 1",
+    "sheet2": "☕ Sheet 2",
+    "report_prefix": "CMP_",
 
     # ── Tolerances ────────────────────────────────────────────
     "coord_tol": 0.05,
     "ijk_tol":   0.001,
     "compare_ijk": False,
-
-    # ── Output ────────────────────────────────────────────────
-    "output_file": "output/points_comparison_v3.xlsx",
 
     # ── Colour Palette (RRGGBB hex, no #) ─────────────────────
     "palette": {
@@ -83,31 +56,43 @@ CONFIG = {
 
 
 FIELDS = ["Name", "X", "Y", "Z", "I", "J", "K"]
+REPORT_SUFFIXES = [
+    "Overview",
+    "All Results",
+    "Match",
+    "Name Changed",
+    "Coord Changed",
+    "Deleted",
+    "Added",
+]
 
 STATUS_LABEL = {
-    "MATCH":         "✔ Совпадение",
-    "NAME_CHANGED":  "✎ Изменилось имя",
-    "COORD_CHANGED": "⚠ Изменились координаты",
-    "DELETED":       "✖ Удалена (только в файле 1)",
-    "ADDED":         "＋ Добавлена (только в файле 2)",
+    "MATCH":         "✔ Match",
+    "NAME_CHANGED":  "✎ Name Changed",
+    "COORD_CHANGED": "⚠ Coordinates Changed",
+    "DELETED":       "✖ Deleted (only in sheet 1)",
+    "ADDED":         "＋ Added (only in sheet 2)",
 }
 
 
-def read_source(path, sheet, col_map):
+def read_source(path, sheet):
     p = Path(path)
-    if p.suffix.lower() in (".xlsx", ".xls", ".xlsm"):
-        raw = pd.read_excel(p, sheet_name=(sheet or 0))
-    else:
-        raw = pd.read_csv(p)
+    raw = pd.read_excel(p, sheet_name=sheet)
     raw.columns = [str(c).strip() for c in raw.columns]
+
+    missing = [field for field in FIELDS if field not in raw.columns]
+    if missing:
+        missing_str = ", ".join(missing)
+        raise ValueError(
+            f"Required columns are missing on sheet '{sheet}': {missing_str}. "
+            "Fix the worksheet headers and run the tool again."
+        )
+
     out = {}
-    for logical, actual in col_map.items():
-        if actual and actual in raw.columns:
-            out[logical] = (raw[actual].astype(str).str.strip()
-                            if logical == "Name"
-                            else pd.to_numeric(raw[actual], errors="coerce"))
-        else:
-            out[logical] = np.nan
+    for field in FIELDS:
+        out[field] = (raw[field].astype(str).str.strip()
+                      if field == "Name"
+                      else pd.to_numeric(raw[field], errors="coerce"))
     return pd.DataFrame(out)
 
 
@@ -169,8 +154,8 @@ def compare(cfg):
     ijk_tol = cfg["ijk_tol"]
     use_ijk = cfg["compare_ijk"]
 
-    df1 = read_source(cfg["file1"], cfg["sheet1"], cfg["col_map1"])
-    df2 = read_source(cfg["file2"], cfg["sheet2"], cfg["col_map2"])
+    df1 = read_source(cfg["workbook_file"], cfg["sheet1"])
+    df2 = read_source(cfg["workbook_file"], cfg["sheet2"])
 
     name_to_i2 = {r["Name"]: i for i, r in df2.iterrows()}
     coord_to_i2 = {}
@@ -300,32 +285,32 @@ def write_data_sheet(wb, title, df, table_name, sk):
     ws.freeze_panes = "B2"
 
 
-def write_overview(wb, df_all, cfg, sk):
-    ws = wb.active
-    ws.title = "Overview"
+def write_overview(wb, title, df_all, cfg, sk):
+    ws = wb.create_sheet(title)
     p = sk.p
 
     for col, w in {"A": 3, "B": 30, "C": 12, "D": 10, "E": 38, "F": 22}.items():
         ws.column_dimensions[col].width = w
 
     ws.merge_cells("B2:F2")
-    ws["B2"] = "Отчёт: сравнение измерительных точек"
+    ws["B2"] = "Measurement Points Comparison Report"
     ws["B2"].font = Font(name=FONT_NAME, size=16, bold=True, color=p["OVERVIEW_TITLE"])
     ws.row_dimensions[2].height = 26
 
     ws.merge_cells("B3:F3")
-    ws["B3"] = (f"Файл 1: {cfg['file1']}  |  Файл 2: {cfg['file2']}  |  "
+    ws["B3"] = (f"Workbook: {cfg['workbook_file']}  |  "
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     ws["B3"].font = Font(name=FONT_NAME, size=10, italic=True, color="888888")
 
     ws.merge_cells("B4:F4")
-    ws["B4"] = (f"Допуск XYZ: {cfg['coord_tol']} мм  |  "
-                f"Допуск IJK: {cfg['ijk_tol']}  |  "
-                f"Сравнивать IJK: {'Да' if cfg['compare_ijk'] else 'Нет'}")
+    ws["B4"] = (f"Sheet 1: {cfg['sheet1']}  |  Sheet 2: {cfg['sheet2']}  |  "
+                f"XYZ tolerance: {cfg['coord_tol']} mm  |  "
+                f"IJK tolerance: {cfg['ijk_tol']}  |  "
+                f"Compare IJK: {'Yes' if cfg['compare_ijk'] else 'No'}")
     ws["B4"].font = Font(name=FONT_NAME, size=10, italic=True, color="AAAAAA")
 
     hrow = 6
-    for ci, h in enumerate(["Статус", "Кол-во", "Цвет", "Описание"], 2):
+    for ci, h in enumerate(["Status", "Count", "Color", "Description"], 2):
         apply_style(ws.cell(hrow, ci, h), sk.hdr())
     ws.row_dimensions[hrow].height = 24
 
@@ -343,7 +328,7 @@ def write_overview(wb, df_all, cfg, sk):
 
     tr = hrow + 6
     ws.row_dimensions[tr].height = 20
-    for ci, val in enumerate(["TOTAL", len(df_all), "", "Всего записей"], 2):
+    for ci, val in enumerate(["TOTAL", len(df_all), "", "Total records"], 2):
         c = ws.cell(tr, ci, val)
         c.border = thin_border()
         c.font = Font(name=FONT_NAME, size=11, bold=True)
@@ -353,11 +338,11 @@ def write_overview(wb, df_all, cfg, sk):
     # Palette reference
     pr = tr + 3
     ws.merge_cells(f"B{pr}:F{pr}")
-    ws[f"B{pr}"] = "Цветовая палитра"
+    ws[f"B{pr}"] = "Color Palette"
     ws[f"B{pr}"].font = Font(name=FONT_NAME, size=12, bold=True)
     ws.row_dimensions[pr].height = 20
     pr += 1
-    for ci, h in enumerate(["Ключ", "Hex", "Образец"], 2):
+    for ci, h in enumerate(["Key", "Hex", "Sample"], 2):
         apply_style(ws.cell(pr, ci, h), sk.hdr())
     for ri2, (k, v) in enumerate(p.items(), pr + 1):
         ws.row_dimensions[ri2].height = 18
@@ -367,20 +352,11 @@ def write_overview(wb, df_all, cfg, sk):
         sc.fill = PatternFill("solid", fgColor=v)
         sc.border = thin_border()
 
-    # Column map
     mr = pr + len(p) + 3
     ws.merge_cells(f"B{mr}:F{mr}")
-    ws[f"B{mr}"] = "Маппинг колонок"
-    ws[f"B{mr}"].font = Font(name=FONT_NAME, size=12, bold=True)
+    ws[f"B{mr}"] = "Required source columns: Name, X, Y, Z, I, J, K"
+    ws[f"B{mr}"].font = Font(name=FONT_NAME, size=11, italic=True)
     ws.row_dimensions[mr].height = 20
-    mr += 1
-    for ci, h in enumerate(["Поле", "Файл 1", "Файл 2"], 2):
-        apply_style(ws.cell(mr, ci, h), sk.hdr())
-    for ri3, field in enumerate(FIELDS, mr + 1):
-        ws.row_dimensions[ri3].height = 18
-        ws.cell(ri3, 2, field).border = thin_border()
-        ws.cell(ri3, 3, cfg["col_map1"].get(field) or "—").border = thin_border()
-        ws.cell(ri3, 4, cfg["col_map2"].get(field) or "—").border = thin_border()
 
 
 def build_report(cfg):
@@ -389,20 +365,24 @@ def build_report(cfg):
     sk = StyleKit(cfg["palette"])
     vc = df_all["Status"].value_counts()
 
-    wb = Workbook()
-    write_overview(wb, df_all, cfg, sk)
-    write_data_sheet(wb, "All Results",     df_all,                          "AllResults",   sk)
-    write_data_sheet(wb, "✔ Match",         df_all[df_all.Status=="MATCH"].reset_index(drop=True),  "Match",        sk)
-    write_data_sheet(wb, "✎ Name Changed",  df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged",  sk)
-    write_data_sheet(wb, "⚠ Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged", sk)
-    write_data_sheet(wb, "✖ Deleted",       df_all[df_all.Status=="DELETED"].reset_index(drop=True),        "Deleted",      sk)
-    write_data_sheet(wb, "＋ Added",         df_all[df_all.Status=="ADDED"].reset_index(drop=True),          "Added",        sk)
+    out = Path(cfg["workbook_file"])
+    wb = load_workbook(out, keep_vba=(out.suffix.lower() == ".xlsm"))
+    for suffix in REPORT_SUFFIXES:
+        name = f"{cfg['report_prefix']}{suffix}"
+        if name in wb.sheetnames:
+            del wb[name]
 
-    out = Path(cfg["output_file"])
-    out.parent.mkdir(parents=True, exist_ok=True)
+    write_overview(wb, f"{cfg['report_prefix']}Overview", df_all, cfg, sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}All Results",  df_all,                          "AllResults",   sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}Match",        df_all[df_all.Status=="MATCH"].reset_index(drop=True),  "Match",        sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}Name Changed", df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged",  sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged", sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}Deleted",      df_all[df_all.Status=="DELETED"].reset_index(drop=True),        "Deleted",      sk)
+    write_data_sheet(wb, f"{cfg['report_prefix']}Added",        df_all[df_all.Status=="ADDED"].reset_index(drop=True),          "Added",        sk)
+
     wb.save(out)
 
-    print(f"\n Report saved → {out}")
+    print(f"\n Report saved in source workbook → {out}")
     print("\n=== Summary ===")
     for s in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED"]:
         print(f"  {STATUS_LABEL[s]}: {vc.get(s, 0)}")

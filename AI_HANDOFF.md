@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`point-compare` compares two lists of measurement points used in CMM / industrial workflows.
+`point-compare` compares two worksheets inside one Excel workbook for CMM / industrial measurement workflows.
 Supported logical fields are `Name`, `X`, `Y`, `Z`, `I`, `J`, `K`.
 The main output is a styled Excel report with status buckets:
 
@@ -14,32 +14,40 @@ The main output is a styled Excel report with status buckets:
 
 ## Current Layout
 
-- `compare_points_interactive.py` — primary entry point; interactive CLI that asks for files, sheet names, column mapping, tolerances, and output path
-- `compare_points_v3.py` — batch/config-driven Python variant with the same comparison core
+- `compare_points_interactive.py` — primary entry point; interactive CLI that asks for one workbook, two sheet names, tolerances, and writes result sheets back into the same workbook
+- `compare_points_gui.py` — Tkinter desktop GUI for the same one-workbook flow
+- `compare_points_v3.py` — batch/config-driven Python variant with the same one-workbook flow
 - `ComparePoints_v3.bas` — Excel VBA implementation
+- `run_point_compare.bat` / `run_point_compare_gui.bat` — Windows launchers that read the root `.env` Python path
 - `PointsCompare_Template.xlsm` — workbook/template placeholder distributed with the project
 - `README.md` — quick-start and behavior summary
 
 ## Current Comparison Logic
 
-Both Python implementations use the same matching strategy:
+All implementations now use the same workbook-first model:
 
-1. Read CSV or Excel input.
-2. Normalize source columns into canonical fields `Name/X/Y/Z/I/J/K`.
-3. Build a name lookup from the new dataset.
-4. Build coordinate buckets from the new dataset using a tolerance-quantized key.
-5. For each original row:
+1. Read two source sheets from one Excel workbook.
+2. Require exact source headers `Name/X/Y/Z/I/J/K` on both sheets.
+3. Normalize those columns into canonical fields.
+4. Build a name lookup from the new dataset.
+5. Build coordinate buckets from the new dataset using a tolerance-quantized key.
+6. For each original row:
    - match by `Name` first
    - if not found, try match by coordinate key
    - otherwise mark as `DELETED`
-6. Any unmatched rows in the new dataset become `ADDED`.
+7. Any unmatched rows in the new dataset become `ADDED`.
+8. Write comparison output to new `CMP_*` sheets in that same workbook.
 
 `compare_ijk` is optional and extends the coordinate key with `I/J/K`.
+
+The GUI should stay thin and reuse the same comparison/report-writing path as the CLI to avoid drift between interfaces.
+The current Python flow also appends `STATUS`, all `NEW_*`, and all `*_diff` columns onto the original source sheet after its last used source column. If the source headers start on row 1, the sheet is shifted down so row 1 can hold grouped labels: `Original data`, `STATUS`, `New Data`, and `Difference`. Existing colors in the original source area should remain untouched.
+Rows that exist only in the new dataset are appended onto the original sheet as extra rows with `STATUS = NEW`.
 
 ## Observed Constraints
 
 - Project-specific handoff/memory files did not exist before this session; they were created on 2026-04-14 to restore workspace protocol compliance.
-- The local machine currently exposes `py.exe`, but no installed Python interpreter was available from it during this session, so runtime validation was not possible.
+- The workspace Python bootstrap now works, and the Python scripts were validated during this session with compile/import checks plus a temporary workbook smoke test.
 - In both Python scripts, duplicate names in the new dataset are collapsed by the name lookup dictionary, so the last duplicate wins during name-based matching.
 - Duplicate coordinate keys are supported as buckets, but duplicate-name behavior is not explicitly surfaced to the user.
 - There are no local automated tests or sample fixtures in the repo yet.
@@ -52,4 +60,4 @@ Both Python implementations use the same matching strategy:
 
 ## Session Note
 
-On 2026-04-14 the project was onboarded into the root wiki workflow, and its baseline behavior was documented before feature work.
+On 2026-04-14 the project was onboarded into the root wiki workflow, then updated to a workbook-first flow with strict source headers and in-place `CMP_*` result sheets.

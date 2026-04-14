@@ -2,41 +2,40 @@
 """
 compare_points_interactive.py
 ==============================
-Интерактивный скрипт сравнения двух списков измерительных точек.
-Спрашивает у пользователя файлы и настройки, затем генерирует Excel-отчёт.
+Interactive script for comparing two worksheets inside one Excel workbook.
+Prompts for a workbook, two sheet names, and comparison settings, then
+writes the result sheets back into the same Excel file.
 
-Поддерживаемые форматы входных файлов:
-  - CSV  (.csv)
-  - Excel (.xlsx, .xls, .xlsm)
+Supported input formats:
+  - Excel (.xlsx, .xlsm)
 
-Категории результата:
-  MATCH          – имя и координаты совпадают
-  NAME_CHANGED   – те же координаты, другое имя
-  COORD_CHANGED  – то же имя, другие координаты  →  показываем dX/dY/dZ
-  DELETED        – есть только в оригинальном списке
-  ADDED          – есть только в новом списке
+Result categories:
+  MATCH          - name and coordinates match
+  NAME_CHANGED   - same coordinates, different name
+  COORD_CHANGED  - same name, different coordinates -> show dX/dY/dZ
+  DELETED        - exists only in the original sheet
+  ADDED          - exists only in the new sheet
 """
 
 import sys
-import os
 from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
 import numpy as np
-from openpyxl import Workbook
+from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ ПО УМОЛЧАНИЮ  (можно менять здесь или через интерактивный ввод)
+#  DEFAULT SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 DEFAULTS = {
-    "coord_tol":   0.05,   # допуск XYZ, мм
-    "ijk_tol":     0.001,  # допуск IJK
-    "compare_ijk": False,  # учитывать IJK при сравнении координат?
+    "coord_tol":   0.05,   # XYZ tolerance, mm
+    "ijk_tol":     0.001,  # IJK tolerance
+    "compare_ijk": False,  # include I/J/K in coordinate comparison?
 }
 
 PALETTE = {
@@ -52,32 +51,68 @@ PALETTE = {
 }
 
 STATUS_LABEL = {
-    "MATCH":         "✔  Совпадение",
-    "NAME_CHANGED":  "✎  Изменилось имя",
-    "COORD_CHANGED": "⚠  Изменились координаты",
-    "DELETED":       "✖  Удалена  (только в оригинале)",
-    "ADDED":         "＋ Добавлена (только в новом)",
+    "MATCH":         "✔  Match",
+    "NAME_CHANGED":  "✎  Name Changed",
+    "COORD_CHANGED": "⚠  Coordinates Changed",
+    "DELETED":       "✖  Deleted (only in original)",
+    "ADDED":         "＋ Added (only in new)",
 }
 
 LOGICAL_FIELDS = ["Name", "X", "Y", "Z", "I", "J", "K"]
 FONT_NAME = "Calibri"
+REPORT_PREFIX = "CMP_"
+REPORT_SUFFIXES = [
+    "Overview",
+    "All Results",
+    "Match",
+    "Name Changed",
+    "Coord Changed",
+    "Deleted",
+    "Added",
+]
+
+GROUP_HEADER_LABELS = {"Original data", "New Data", "Difference", "STATUS"}
+
+ORIGINAL_SHEET_APPEND_MAP = [
+    ("Status", "STATUS"),
+    ("NEW_Name", "NEW_Name"),
+    ("NEW_X", "NEW_X"),
+    ("NEW_Y", "NEW_Y"),
+    ("NEW_Z", "NEW_Z"),
+    ("NEW_I", "NEW_I"),
+    ("NEW_J", "NEW_J"),
+    ("NEW_K", "NEW_K"),
+    ("NAME_diff", "NAME_diff"),
+    ("X_diff", "X_diff"),
+    ("Y_diff", "Y_diff"),
+    ("Z_diff", "Z_diff"),
+    ("I_diff", "I_diff"),
+    ("J_diff", "J_diff"),
+    ("K_diff", "K_diff"),
+    ("DIFF_Fields", "DIFF_Fields"),
+]
+
+ORIGINAL_SHEET_NUMERIC_COLUMNS = {
+    "NEW_X", "NEW_Y", "NEW_Z", "NEW_I", "NEW_J", "NEW_K",
+    "X_diff", "Y_diff", "Z_diff", "I_diff", "J_diff", "K_diff",
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  УТИЛИТЫ
+#  UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def hr(char="─", n=60):
     print(char * n)
 
 def ask(prompt, default=None, validator=None):
-    """Спрашивает пользователя, возвращает строку."""
+    """Prompt the user and return a string."""
     hint = f" [{default}]" if default is not None else ""
     while True:
         raw = input(f"{prompt}{hint}: ").strip()
         if raw == "" and default is not None:
             return str(default)
         if raw == "" and default is None:
-            print("  ⚠  Значение обязательно.")
+            print("  ⚠  A value is required.")
             continue
         if validator:
             ok, msg = validator(raw)
@@ -91,7 +126,7 @@ def ask_yn(prompt, default=True):
     raw = input(f"{prompt} [{hint}]: ").strip().lower()
     if raw == "":
         return default
-    return raw in ("y", "yes", "да", "д")
+    return raw in ("y", "yes")
 
 def ask_float(prompt, default):
     while True:
@@ -101,100 +136,68 @@ def ask_float(prompt, default):
         try:
             return float(raw)
         except ValueError:
-            print("  ⚠  Введите число, например 0.05")
+            print("  ⚠  Enter a numeric value such as 0.05")
 
-def validate_file(path_str):
+def validate_workbook(path_str):
     p = Path(path_str)
     if not p.exists():
-        return False, f"Файл не найден: {p}"
-    if p.suffix.lower() not in (".csv", ".xlsx", ".xls", ".xlsm"):
-        return False, "Поддерживаются: .csv, .xlsx, .xls, .xlsm"
+        return False, f"File not found: {p}"
+    if p.suffix.lower() not in (".xlsx", ".xlsm"):
+        return False, "Only .xlsx and .xlsm Excel files are supported"
     return True, ""
 
 def list_sheets(path):
-    """Возвращает список листов для Excel-файла."""
-    p = Path(path)
-    if p.suffix.lower() == ".csv":
-        return []
+    """Return the worksheet names from an Excel file."""
     try:
         xl = pd.ExcelFile(path)
         return xl.sheet_names
     except Exception:
         return []
 
-def read_file(path, sheet=None):
-    """Читает файл, возвращает DataFrame."""
-    p = Path(path)
-    if p.suffix.lower() == ".csv":
-        with open(p, encoding="utf-8-sig", errors="replace") as f:
-            sample = f.read(2048)
-        sep = ";" if sample.count(";") > sample.count(",") else ","
-        return pd.read_csv(p, sep=sep, encoding="utf-8-sig")
-    else:
-        kw = {"sheet_name": sheet} if sheet else {"sheet_name": 0}
-        return pd.read_excel(p, **kw)
+def read_sheet(path, sheet):
+    """Read an Excel sheet into a DataFrame."""
+    header_row = detect_header_row(path, sheet)
+    return pd.read_excel(path, sheet_name=sheet, header=header_row - 1)
 
-def choose_column(df, field_hint, file_label, allow_skip=False):
-    """Интерактивно выбирает колонку из DataFrame."""
-    cols = list(df.columns)
-    hints = {
-        "Name": ["name", "label", "pointname", "point", "id", "имя", "название", "обозначение"],
-        "X":    ["x", "x_mm", "cx"],
-        "Y":    ["y", "y_mm", "cy"],
-        "Z":    ["z", "z_mm", "cz"],
-        "I":    ["i", "vx", "nx", "ix"],
-        "J":    ["j", "vy", "ny", "jy"],
-        "K":    ["k", "vz", "nz", "kz"],
-    }
-    guess = None
-    for col in cols:
-        if col.lower() in hints.get(field_hint, []):
-            guess = col
-            break
+def detect_header_row(path, sheet):
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet]
+        row1 = ["" if cell.value is None else str(cell.value).strip() for cell in ws[1]]
+        row2 = ["" if cell.value is None else str(cell.value).strip() for cell in ws[2]]
+    finally:
+        wb.close()
 
-    print(f"\n  Поле «{field_hint}» для {file_label}:")
-    for i, col in enumerate(cols, 1):
-        marker = " ← авто" if col == guess else ""
-        print(f"    {i:2d}. {col}{marker}")
-    if allow_skip:
-        print(f"     0. Пропустить (нет этой колонки)")
-
-    hint_str = f" [{guess}]" if guess else (" [0-пропустить]" if allow_skip else "")
-    while True:
-        raw = input(f"  Выберите номер или имя колонки{hint_str}: ").strip()
-        if raw == "" and guess:
-            return guess
-        if raw == "" and allow_skip:
-            return None
-        if raw == "0" and allow_skip:
-            return None
-        try:
-            idx = int(raw) - 1
-            if 0 <= idx < len(cols):
-                return cols[idx]
-        except ValueError:
-            pass
-        if raw in cols:
-            return raw
-        print("  ⚠  Не найдено. Введите номер из списка выше.")
+    if any(value in GROUP_HEADER_LABELS for value in row1) and all(field in row2 for field in LOGICAL_FIELDS):
+        return 2
+    return 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ЛОГИКА СРАВНЕНИЯ
+#  COMPARISON LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
 
-def normalize(df, col_map):
-    """Приводит DataFrame к стандартным полям Name/X/Y/Z/I/J/K."""
+def prepare_sheet(df, sheet_name):
+    """Validate required columns and normalize the sheet."""
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    missing = [field for field in LOGICAL_FIELDS if field not in df.columns]
+    if missing:
+        missing_str = ", ".join(missing)
+        raise ValueError(
+            f"Required columns are missing on sheet '{sheet_name}': {missing_str}. "
+            "Fix the worksheet headers in the Excel file and run the tool again."
+        )
+
     out = {}
-    for logical, actual in col_map.items():
-        if actual and actual in df.columns:
-            if logical == "Name":
-                out[logical] = df[actual].astype(str).str.strip()
-            else:
-                out[logical] = pd.to_numeric(df[actual], errors="coerce")
+    for field in LOGICAL_FIELDS:
+        if field == "Name":
+            out[field] = df[field].where(df[field].notna(), "").astype(str).str.strip()
         else:
-            out[logical] = np.nan
-    return pd.DataFrame(out)
+            out[field] = pd.to_numeric(df[field], errors="coerce")
+    prepared = pd.DataFrame(out)
+    keep_mask = (prepared["Name"] != "") | prepared[["X", "Y", "Z", "I", "J", "K"]].notna().any(axis=1)
+    return prepared.loc[keep_mask].reset_index(drop=True)
 
 def coord_key(row, tol, ijk_tol, use_ijk):
     def rnd(v, t):
@@ -298,7 +301,7 @@ def compare(df_orig, df_new, tol, ijk_tol, use_ijk):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  EXCEL ОТЧЁТ
+#  EXCEL REPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
 COL_ORDER = [
@@ -340,10 +343,34 @@ def data_style(status, is_diff=False):
         border=thin(),
     )
 
+def original_sheet_header_style():
+    return dict(
+        font=Font(name=FONT_NAME, bold=True, color="222222", size=11),
+        fill=PatternFill("solid", fgColor="EDEDED"),
+        alignment=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        border=thin(),
+    )
+
+def original_sheet_group_style():
+    return dict(
+        font=Font(name=FONT_NAME, bold=True, color="FFFFFF", size=11),
+        fill=PatternFill("solid", fgColor="5B9BD5"),
+        alignment=Alignment(horizontal="center", vertical="center", wrap_text=True),
+        border=thin(),
+    )
+
+def original_sheet_data_style(is_diff=False):
+    font = Font(name=FONT_NAME, size=10, bold=is_diff, color=PALETTE["DIFF_CELL"] if is_diff else "000000")
+    return dict(
+        font=font,
+        alignment=Alignment(horizontal="left", vertical="center"),
+        border=thin(),
+    )
+
 def write_data_sheet(wb, title, df, table_name):
     ws = wb.create_sheet(title)
     if df.empty:
-        ws.cell(1, 1, "Нет данных").font = Font(italic=True)
+        ws.cell(1, 1, "No data").font = Font(italic=True)
         return
 
     cols = [c for c in COL_ORDER if c in df.columns]
@@ -377,35 +404,33 @@ def write_data_sheet(wb, title, df, table_name):
     ws.add_table(t)
     ws.freeze_panes = "B2"
 
-def write_overview(wb, df_all, meta):
-    ws = wb.active
-    ws.title = "Overview"
+def write_overview(wb, title, df_all, meta):
+    ws = wb.create_sheet(title)
 
     for col, w in {"A": 3, "B": 32, "C": 14, "D": 10, "E": 42}.items():
         ws.column_dimensions[col].width = w
 
     ws.merge_cells("B2:E2")
-    ws["B2"] = "Отчёт: сравнение измерительных точек"
+    ws["B2"] = "Measurement Points Comparison Report"
     ws["B2"].font = Font(name=FONT_NAME, size=16, bold=True, color=PALETTE["TITLE"])
     ws.row_dimensions[2].height = 28
 
     ws.merge_cells("B3:E3")
-    ws["B3"] = (f"Оригинал: {meta['orig_file']}   |   "
-                f"Новый: {meta['new_file']}   |   "
+    ws["B3"] = (f"Workbook: {meta['workbook']}   |   "
                 f"{datetime.now().strftime('%Y-%m-%d  %H:%M')}")
     ws["B3"].font = Font(name=FONT_NAME, size=10, italic=True, color="888888")
     ws.row_dimensions[3].height = 18
 
     ws.merge_cells("B4:E4")
-    ws["B4"] = (f"Точек в оригинале: {meta['n_orig']}   |   "
-                f"Точек в новом: {meta['n_new']}   |   "
-                f"Допуск XYZ: {meta['tol']} мм   |   "
-                f"IJK: {'вкл.' if meta['use_ijk'] else 'выкл.'}")
+    ws["B4"] = (f"Sheet 1: {meta['orig_sheet']} ({meta['n_orig']} rows)   |   "
+                f"Sheet 2: {meta['new_sheet']} ({meta['n_new']} rows)   |   "
+                f"XYZ tolerance: {meta['tol']} mm   |   "
+                f"IJK: {'on' if meta['use_ijk'] else 'off'}")
     ws["B4"].font = Font(name=FONT_NAME, size=10, italic=True, color="AAAAAA")
     ws.row_dimensions[4].height = 16
 
     hrow = 6
-    for ci, h in enumerate(["Статус", "Кол-во", "Цвет", "Описание"], 2):
+    for ci, h in enumerate(["Status", "Count", "Color", "Description"], 2):
         ap(ws.cell(hrow, ci, h), hdr_style())
     ws.row_dimensions[hrow].height = 24
 
@@ -425,7 +450,7 @@ def write_overview(wb, df_all, meta):
 
     tr = hrow + 6
     ws.row_dimensions[tr].height = 22
-    for ci, val in enumerate(["TOTAL", len(df_all), "", "Всего записей"], 2):
+    for ci, val in enumerate(["TOTAL", len(df_all), "", "Total records"], 2):
         c = ws.cell(tr, ci, val)
         c.font   = Font(name=FONT_NAME, size=11, bold=True)
         c.border = thin()
@@ -435,144 +460,307 @@ def write_overview(wb, df_all, meta):
 
     lr = tr + 3
     ws.merge_cells(f"B{lr}:E{lr}")
-    ws[f"B{lr}"] = "Оранжевый текст в diff-колонках = значение отличается от нуля"
+    ws[f"B{lr}"] = "Orange text in diff columns means the value is not zero"
     ws[f"B{lr}"].font = Font(name=FONT_NAME, size=10, italic=True,
                               color=PALETTE["DIFF_CELL"])
     ws.row_dimensions[lr].height = 18
 
-def build_report(df_all, meta, out_path):
-    wb = Workbook()
-    write_overview(wb, df_all, meta)
-    write_data_sheet(wb, "All Results",     df_all,                                    "AllResults")
-    write_data_sheet(wb, "✔ Match",         df_all[df_all.Status=="MATCH"].reset_index(drop=True),         "Match")
-    write_data_sheet(wb, "✎ Name Changed",  df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged")
-    write_data_sheet(wb, "⚠ Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged")
-    write_data_sheet(wb, "✖ Deleted",       df_all[df_all.Status=="DELETED"].reset_index(drop=True),       "Deleted")
-    write_data_sheet(wb, "＋ Added",         df_all[df_all.Status=="ADDED"].reset_index(drop=True),         "Added")
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
+def delete_report_sheets(wb, prefix):
+    for suffix in REPORT_SUFFIXES:
+        name = f"{prefix}{suffix}"
+        if name in wb.sheetnames:
+            del wb[name]
+
+def write_report_sheets(wb, df_all, meta, prefix=REPORT_PREFIX):
+    delete_report_sheets(wb, prefix)
+    write_overview(wb, f"{prefix}Overview", df_all, meta)
+    write_data_sheet(wb, f"{prefix}All Results",  df_all,                                    "AllResults")
+    write_data_sheet(wb, f"{prefix}Match",        df_all[df_all.Status=="MATCH"].reset_index(drop=True),         "Match")
+    write_data_sheet(wb, f"{prefix}Name Changed", df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged")
+    write_data_sheet(wb, f"{prefix}Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged")
+    write_data_sheet(wb, f"{prefix}Deleted",      df_all[df_all.Status=="DELETED"].reset_index(drop=True),       "Deleted")
+    write_data_sheet(wb, f"{prefix}Added",        df_all[df_all.Status=="ADDED"].reset_index(drop=True),         "Added")
+
+def build_report(df_all, meta, workbook_path, prefix=REPORT_PREFIX):
+    keep_vba = Path(workbook_path).suffix.lower() == ".xlsm"
+    wb = load_workbook(workbook_path, keep_vba=keep_vba)
+    write_report_sheets(wb, df_all, meta, prefix=prefix)
+    wb.save(workbook_path)
+
+def find_existing_append_block(ws, headers):
+    row_values = []
+    header_row = get_original_sheet_header_row(ws)
+    for col_idx in range(1, ws.max_column + 1):
+        value = ws.cell(header_row, col_idx).value
+        row_values.append("" if value is None else str(value).strip())
+
+    block_len = len(headers)
+    for start_idx in range(0, len(row_values) - block_len + 1):
+        if row_values[start_idx:start_idx + block_len] == headers:
+            return start_idx + 1
+    return None
+
+def get_original_sheet_header_row(ws):
+    row1 = ["" if ws.cell(1, col_idx).value is None else str(ws.cell(1, col_idx).value).strip() for col_idx in range(1, ws.max_column + 1)]
+    row2 = ["" if ws.cell(2, col_idx).value is None else str(ws.cell(2, col_idx).value).strip() for col_idx in range(1, ws.max_column + 1)]
+    if any(value in GROUP_HEADER_LABELS for value in row1) and all(field in row2 for field in LOGICAL_FIELDS):
+        return 2
+    return 1
+
+def ensure_original_sheet_group_row(ws):
+    header_row = get_original_sheet_header_row(ws)
+    if header_row == 1:
+        ws.insert_rows(1)
+        header_row = 2
+    return header_row
+
+def clear_existing_output_rows(ws, data_start_row, original_data_rows, source_end_col):
+    row_idx = data_start_row + original_data_rows
+    while row_idx <= ws.max_row:
+        has_original_data = any(
+            ws.cell(row_idx, col_idx).value not in (None, "")
+            for col_idx in range(1, source_end_col + 1)
+        )
+        if has_original_data:
+            break
+        ws.delete_rows(row_idx, 1)
+
+def apply_group_labels(ws, source_end_col, status_col, new_start_col, new_end_col, diff_start_col, diff_end_col):
+    for merge_range in list(ws.merged_cells.ranges):
+        if merge_range.min_row == 1 and merge_range.max_row == 1:
+            ws.unmerge_cells(str(merge_range))
+
+    def write_group(start_col, end_col, label):
+        if start_col > end_col:
+            return
+        if start_col == end_col:
+            cell = ws.cell(1, start_col, label)
+            ap(cell, original_sheet_group_style())
+            return
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        cell = ws.cell(1, start_col, label)
+        ap(cell, original_sheet_group_style())
+
+    write_group(1, source_end_col, "Original data")
+    cell = ws.cell(1, status_col, "STATUS")
+    ap(cell, original_sheet_group_style())
+    write_group(new_start_col, new_end_col, "New Data")
+    write_group(diff_start_col, diff_end_col, "Difference")
+
+def append_results_to_original_sheet(wb, sheet_name, df_all, n_orig):
+    ws = wb[sheet_name]
+    header_row = ensure_original_sheet_group_row(ws)
+    headers = [header for _, header in ORIGINAL_SHEET_APPEND_MAP]
+    start_col = find_existing_append_block(ws, headers)
+    source_end_col = start_col - 1 if start_col is not None else ws.max_column
+    if start_col is None:
+        start_col = source_end_col + 1
+    end_col = start_col + len(headers) - 1
+    data_start_row = header_row + 1
+
+    for col_idx in range(start_col, end_col + 1):
+        for row_idx in range(header_row, ws.max_row + 1):
+            cell = ws.cell(row_idx, col_idx)
+            cell.value = None
+            cell.fill = PatternFill(fill_type=None)
+            cell.border = Border()
+            cell.alignment = Alignment(horizontal="general", vertical="bottom")
+            cell.font = Font(name=FONT_NAME, size=10)
+
+    clear_existing_output_rows(ws, data_start_row, n_orig, source_end_col)
+
+    for offset, (_, header) in enumerate(ORIGINAL_SHEET_APPEND_MAP):
+        cell = ws.cell(header_row, start_col + offset, header)
+        ap(cell, original_sheet_header_style())
+
+    orig_rows = df_all.iloc[:n_orig].reset_index(drop=True)
+    for row_idx, (_, result_row) in enumerate(orig_rows.iterrows(), start=data_start_row):
+        for offset, (source_col, _) in enumerate(ORIGINAL_SHEET_APPEND_MAP):
+            value = result_row[source_col] if source_col in result_row else ""
+            if isinstance(value, float) and np.isnan(value):
+                value = ""
+            is_diff = source_col.endswith("_diff") or source_col == "DIFF_Fields"
+            cell = ws.cell(row_idx, start_col + offset, value)
+            ap(cell, original_sheet_data_style(is_diff=is_diff and value not in ("", 0, 0.0)))
+            if source_col in ORIGINAL_SHEET_NUMERIC_COLUMNS:
+                cell.number_format = "0.0000"
+
+    added_rows = df_all[df_all.Status == "ADDED"].reset_index(drop=True)
+    append_row_idx = data_start_row + n_orig
+    for _, added_row in added_rows.iterrows():
+        for offset, (source_col, _) in enumerate(ORIGINAL_SHEET_APPEND_MAP):
+            value = ""
+            if source_col == "Status":
+                value = "NEW"
+            elif source_col.startswith("NEW_"):
+                value = added_row.get(source_col, "")
+                if isinstance(value, float) and np.isnan(value):
+                    value = ""
+            cell = ws.cell(append_row_idx, start_col + offset, value)
+            is_diff = source_col.endswith("_diff") or source_col == "DIFF_Fields"
+            ap(cell, original_sheet_data_style(is_diff=is_diff and value not in ("", 0, 0.0)))
+            if source_col in ORIGINAL_SHEET_NUMERIC_COLUMNS:
+                cell.number_format = "0.0000"
+        append_row_idx += 1
+
+    for offset, (_, header) in enumerate(ORIGINAL_SHEET_APPEND_MAP):
+        col_idx = start_col + offset
+        sample_values = [str(header)]
+        sample_values.extend(
+            str(ws.cell(row_idx, col_idx).value)
+            for row_idx in range(data_start_row, ws.max_row + 1)
+            if ws.cell(row_idx, col_idx).value not in (None, "")
+        )
+        width = min(max((len(value) + 2) for value in sample_values), 24)
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    apply_group_labels(
+        ws,
+        source_end_col=source_end_col,
+        status_col=start_col,
+        new_start_col=start_col + 1,
+        new_end_col=start_col + 7,
+        diff_start_col=start_col + 8,
+        diff_end_col=end_col,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ИНТЕРАКТИВНЫЙ ДИАЛОГ
+#  SHARED EXECUTION FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_comparison(
+    workbook_path,
+    orig_sheet,
+    new_sheet,
+    tol,
+    ijk_tol,
+    use_ijk,
+    create_report_sheets=True,
+):
+    """Run the workbook comparison and write report sheets back into the workbook."""
+    df_orig_raw = read_sheet(workbook_path, orig_sheet)
+    df_new_raw = read_sheet(workbook_path, new_sheet)
+
+    df_orig = prepare_sheet(df_orig_raw, orig_sheet)
+    df_new = prepare_sheet(df_new_raw, new_sheet)
+    df_all = compare(df_orig, df_new, tol, ijk_tol, use_ijk)
+
+    meta = {
+        "workbook": Path(workbook_path).name,
+        "orig_sheet": orig_sheet,
+        "new_sheet": new_sheet,
+        "n_orig": len(df_orig),
+        "n_new": len(df_new),
+        "tol": tol,
+        "ijk_tol": ijk_tol,
+        "use_ijk": use_ijk,
+    }
+    keep_vba = Path(workbook_path).suffix.lower() == ".xlsm"
+    wb = load_workbook(workbook_path, keep_vba=keep_vba)
+    append_results_to_original_sheet(wb, orig_sheet, df_all, len(df_orig))
+    if create_report_sheets:
+        write_report_sheets(wb, df_all, meta)
+    wb.save(workbook_path)
+    return {
+        "df_all": df_all,
+        "meta": meta,
+        "orig_columns": list(df_orig_raw.columns),
+        "new_columns": list(df_new_raw.columns),
+        "create_report_sheets": create_report_sheets,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INTERACTIVE FLOW
 # ══════════════════════════════════════════════════════════════════════════════
 
 def interactive():
     hr("═")
-    print("  СРАВНЕНИЕ ИЗМЕРИТЕЛЬНЫХ ТОЧЕК")
+    print("  MEASUREMENT POINTS COMPARISON")
     hr("═")
     print()
 
     hr()
-    print("  ШАГ 1 из 5 — ОРИГИНАЛЬНЫЙ ФАЙЛ")
+    print("  STEP 1 OF 4 - EXCEL WORKBOOK")
     hr()
-    orig_path = ask("  Путь к оригинальному файлу", validator=validate_file)
+    workbook_path = ask("  Path to the Excel workbook", validator=validate_workbook)
 
-    orig_sheet = None
-    orig_sheets = list_sheets(orig_path)
-    if orig_sheets:
-        print(f"\n  Листы в файле: {', '.join(str(s) for s in orig_sheets)}")
-        orig_sheet = ask("  Имя листа", default=str(orig_sheets[0]))
-        orig_sheet = orig_sheet if orig_sheet in orig_sheets else orig_sheets[0]
+    sheets = list_sheets(workbook_path)
+    if not sheets:
+        print("\n  ⚠  Unable to read worksheet names from the Excel file.")
+        return None, None
 
-    print("\n  Читаю оригинальный файл …")
-    df_orig_raw = read_file(orig_path, orig_sheet)
-    df_orig_raw.columns = [str(c).strip() for c in df_orig_raw.columns]
-    print(f"  Загружено строк: {len(df_orig_raw)}  |  Колонки: {list(df_orig_raw.columns)}")
+    print(f"\n  Available sheets: {', '.join(str(s) for s in sheets)}")
 
     print()
     hr()
-    print("  ШАГ 2 из 5 — НОВЫЙ ФАЙЛ")
+    print("  STEP 2 OF 4 - ORIGINAL SHEET")
     hr()
-    new_path = ask("  Путь к новому файлу", validator=validate_file)
-
-    new_sheet = None
-    new_sheets = list_sheets(new_path)
-    if new_sheets:
-        print(f"\n  Листы в файле: {', '.join(str(s) for s in new_sheets)}")
-        new_sheet = ask("  Имя листа", default=str(new_sheets[0]))
-        new_sheet = new_sheet if new_sheet in new_sheets else new_sheets[0]
-
-    print("\n  Читаю новый файл …")
-    df_new_raw = read_file(new_path, new_sheet)
-    df_new_raw.columns = [str(c).strip() for c in df_new_raw.columns]
-    print(f"  Загружено строк: {len(df_new_raw)}  |  Колонки: {list(df_new_raw.columns)}")
+    orig_sheet = ask("  Name of the first sheet", default=str(sheets[0]))
+    orig_sheet = orig_sheet if orig_sheet in sheets else sheets[0]
 
     print()
     hr()
-    print("  ШАГ 3 из 5 — МАППИНГ КОЛОНОК")
+    print("  STEP 3 OF 4 - NEW SHEET")
     hr()
-    print("  Укажите, какие колонки соответствуют полям Name/X/Y/Z/I/J/K")
-    print("  (I, J, K можно пропустить если их нет)")
-
-    col_map_orig = {}
-    col_map_new  = {}
-    for field in LOGICAL_FIELDS:
-        allow_skip = field in ("I","J","K")
-        col_map_orig[field] = choose_column(df_orig_raw, field, "ОРИГИНАЛ", allow_skip)
-        col_map_new[field]  = choose_column(df_new_raw,  field, "НОВЫЙ",    allow_skip)
+    default_new_sheet = str(sheets[1]) if len(sheets) > 1 else str(sheets[0])
+    new_sheet = ask("  Name of the second sheet", default=default_new_sheet)
+    new_sheet = new_sheet if new_sheet in sheets else default_new_sheet
 
     print()
     hr()
-    print("  ШАГ 4 из 5 — НАСТРОЙКИ СРАВНЕНИЯ")
+    print("  Reading Excel sheets ...")
     hr()
-    tol     = ask_float("  Допуск XYZ (мм)", DEFAULTS["coord_tol"])
-    ijk_tol = ask_float("  Допуск IJK",       DEFAULTS["ijk_tol"])
-    use_ijk = ask_yn("  Учитывать I/J/K при сравнении координат?", DEFAULTS["compare_ijk"])
+    df_orig_raw = read_sheet(workbook_path, orig_sheet)
+    df_new_raw = read_sheet(workbook_path, new_sheet)
+    print(f"  Sheet 1: {orig_sheet}  |  Rows: {len(df_orig_raw)}  |  Columns: {list(df_orig_raw.columns)}")
+    print(f"  Sheet 2: {new_sheet}  |  Rows: {len(df_new_raw)}  |  Columns: {list(df_new_raw.columns)}")
 
     print()
     hr()
-    print("  ШАГ 5 из 5 — ВЫХОДНОЙ ФАЙЛ")
+    print("  STEP 4 OF 4 - COMPARISON SETTINGS")
     hr()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out = f"comparison_report_{ts}.xlsx"
-    out_path = ask("  Путь к файлу отчёта (.xlsx)", default=default_out)
-    if not out_path.lower().endswith(".xlsx"):
-        out_path += ".xlsx"
+    tol     = ask_float("  XYZ tolerance (mm)", DEFAULTS["coord_tol"])
+    ijk_tol = ask_float("  IJK tolerance",       DEFAULTS["ijk_tol"])
+    use_ijk = ask_yn("  Include I/J/K in coordinate comparison?", DEFAULTS["compare_ijk"])
 
     print()
     hr()
-    print("  Нормализую данные …")
-    df_orig = normalize(df_orig_raw, col_map_orig)
-    df_new  = normalize(df_new_raw,  col_map_new)
+    print("  Normalizing data ...")
+    try:
+        result = run_comparison(workbook_path, orig_sheet, new_sheet, tol, ijk_tol, use_ijk)
+    except ValueError as exc:
+        print(f"  ⚠  {exc}")
+        hr("═")
+        return None, None
 
-    print("  Сравниваю точки …")
-    df_all = compare(df_orig, df_new, tol, ijk_tol, use_ijk)
+    df_all = result["df_all"]
+    meta = result["meta"]
 
     vc = df_all["Status"].value_counts()
     print()
     hr()
-    print("  РЕЗУЛЬТАТЫ")
+    print("  RESULTS")
     hr()
     for code in ["MATCH","NAME_CHANGED","COORD_CHANGED","DELETED","ADDED"]:
         print(f"  {STATUS_LABEL[code]:<40s}: {vc.get(code, 0):>5d}")
-    print(f"  {'ИТОГО':<40s}: {len(df_all):>5d}")
+    print(f"  {'TOTAL':<40s}: {len(df_all):>5d}")
     hr()
 
-    meta = {
-        "orig_file": Path(orig_path).name,
-        "new_file":  Path(new_path).name,
-        "n_orig":    len(df_orig),
-        "n_new":     len(df_new),
-        "tol":       tol,
-        "ijk_tol":   ijk_tol,
-        "use_ijk":   use_ijk,
-    }
-    print(f"\n  Генерирую отчёт: {out_path} …")
-    build_report(df_all, meta, out_path)
-    print(f"  ✅ Готово!  →  {Path(out_path).resolve()}")
+    print(f"\n  ✅ Done. The original sheet was updated and CMP_* sheets were written to {Path(workbook_path).resolve()}")
     hr("═")
 
-    return df_all, out_path
+    return df_all, workbook_path
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ТОЧКА ВХОДА
+#  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     try:
         interactive()
     except KeyboardInterrupt:
-        print("\n\n  Прервано пользователем.")
+        print("\n\n  Cancelled by user.")
         sys.exit(0)
