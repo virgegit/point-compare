@@ -29,17 +29,14 @@ from datetime import datetime
 #  CONFIGURATION  – edit this section before running
 # ════════════════════════════════════════════════════════════════
 CONFIG = {
-    # ── Input ────────────────────────────────────────────
-    # CSV path, or Excel path + sheet name (sheet=None → first sheet)
-    "file1":  "file1.csv",
+    # ── Input ────────────────────────────────────────────────────
+    "file1":  "AB3_PMP_points.csv",
     "sheet1": None,
 
-    "file2":  "file2.csv",
+    "file2":  "Framer-3-Inline-PMPs-04082026-2.csv",
     "sheet2": None,
 
-    # ── Column mapping for File 1 ──────────────────────
-    # Map logical name → actual column header in the file.
-    # Set value to None to skip that column.
+    # ── Column mapping for File 1 ──────────────────────────────
     "col_map1": {
         "Name": "Label",
         "X":    "X",
@@ -50,37 +47,36 @@ CONFIG = {
         "K":    "Vz",
     },
 
-    # ── Column mapping for File 2 ──────────────────────
+    # ── Column mapping for File 2 ──────────────────────────────
     "col_map2": {
         "Name": "PointName",
         "X":    "X_mm",
         "Y":    "Y_mm",
         "Z":    "Z_mm",
-        "I":    None,   # not present – leave as None
+        "I":    None,
         "J":    None,
         "K":    None,
     },
 
-    # ── Tolerances ──────────────────────────────────
-    "coord_tol": 0.05,    # mm  (XYZ)
-    "ijk_tol":   0.001,   # direction components
-    "compare_ijk": False, # include I,J,K in coordinate matching?
+    # ── Tolerances ────────────────────────────────────────────
+    "coord_tol": 0.05,
+    "ijk_tol":   0.001,
+    "compare_ijk": False,
 
-    # ── Output ────────────────────────────────────
+    # ── Output ────────────────────────────────────────────────
     "output_file": "output/points_comparison_v3.xlsx",
 
-    # ── Colour Palette (RRGGBB hex, no #) ─────────────────
-    # Change any value to customise the report colours.
+    # ── Colour Palette (RRGGBB hex, no #) ─────────────────────
     "palette": {
-        "MATCH":         "C6EFCE",   # green
-        "NAME_CHANGED":  "FFEB9C",   # yellow
-        "COORD_CHANGED": "FFD7D7",   # red-light
-        "DELETED":       "F4CCCC",   # rose
-        "ADDED":         "D9EAD3",   # mint
-        "DIFF_CELL":     "FF6600",   # orange – highlights the changed field
-        "HEADER_BG":     "4472C4",   # blue
-        "HEADER_FG":     "FFFFFF",   # white
-        "OVERVIEW_TITLE":"1F3864",   # dark blue
+        "MATCH":         "C6EFCE",
+        "NAME_CHANGED":  "FFEB9C",
+        "COORD_CHANGED": "FFD7D7",
+        "DELETED":       "F4CCCC",
+        "ADDED":         "D9EAD3",
+        "DIFF_CELL":     "FF6600",
+        "HEADER_BG":     "4472C4",
+        "HEADER_FG":     "FFFFFF",
+        "OVERVIEW_TITLE":"1F3864",
     },
 }
 # ════════════════════════════════════════════════════════════════
@@ -89,15 +85,13 @@ CONFIG = {
 FIELDS = ["Name", "X", "Y", "Z", "I", "J", "K"]
 
 STATUS_LABEL = {
-    "MATCH":         "✔ Match",
-    "NAME_CHANGED":  "✎ Name Changed",
-    "COORD_CHANGED": "⚠ Coords Changed",
-    "DELETED":       "✖ Deleted (file 1 only)",
-    "ADDED":         "+ Added (file 2 only)",
+    "MATCH":         "✔ Совпадение",
+    "NAME_CHANGED":  "✎ Изменилось имя",
+    "COORD_CHANGED": "⚠ Изменились координаты",
+    "DELETED":       "✖ Удалена (только в файле 1)",
+    "ADDED":         "＋ Добавлена (только в файле 2)",
 }
 
-
-# ─── I/O helpers ────────────────────────────────────────────────────────────────────
 
 def read_source(path, sheet, col_map):
     p = Path(path)
@@ -117,13 +111,10 @@ def read_source(path, sheet, col_map):
     return pd.DataFrame(out)
 
 
-# ─── Comparison logic ─────────────────────────────────────────────────────────────────
-
 def coord_key(row, tol, ijk_tol, use_ijk):
     def rnd(v, t):
         try:
-            f = float(v)
-            return int(round(f / t))
+            return int(round(float(v) / t))
         except (TypeError, ValueError):
             return None
     k = (rnd(row["X"], tol), rnd(row["Y"], tol), rnd(row["Z"], tol))
@@ -134,7 +125,7 @@ def coord_key(row, tol, ijk_tol, use_ijk):
 
 def fmt(v):
     if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "-"
+        return "–"
     if isinstance(v, float):
         return f"{v:.4f}"
     return str(v)
@@ -166,7 +157,7 @@ def build_result_row(status, r1, r2):
         else:
             d = delta(v1, v2)
             row[f"{f}_diff"] = d
-            if status == "COORD_CHANGED" and not np.isnan(d) and abs(d) > 1e-9:
+            if status == "COORD_CHANGED" and not (isinstance(d, float) and np.isnan(d)) and abs(d) > 1e-9:
                 diff_fields.append(f)
 
     row["DIFF_Fields"] = ", ".join(diff_fields) if diff_fields else ""
@@ -174,9 +165,9 @@ def build_result_row(status, r1, r2):
 
 
 def compare(cfg):
-    tol      = cfg["coord_tol"]
-    ijk_tol  = cfg["ijk_tol"]
-    use_ijk  = cfg["compare_ijk"]
+    tol     = cfg["coord_tol"]
+    ijk_tol = cfg["ijk_tol"]
+    use_ijk = cfg["compare_ijk"]
 
     df1 = read_source(cfg["file1"], cfg["sheet1"], cfg["col_map1"])
     df2 = read_source(cfg["file2"], cfg["sheet2"], cfg["col_map2"])
@@ -221,8 +212,6 @@ def compare(cfg):
     return pd.DataFrame(results), df1, df2
 
 
-# ─── Excel styles ────────────────────────────────────────────────────────────────────
-
 FONT_NAME = "Calibri"
 
 
@@ -243,13 +232,18 @@ class StyleKit:
             border=thin_border(),
         )
 
-    def data(self, status, diff=False):
-        fill = PatternFill("solid", fgColor=self.p.get(status, "FFFFFF"))
-        font = (Font(name=FONT_NAME, size=10, bold=True, color=self.p["DIFF_CELL"])
-                if diff else Font(name=FONT_NAME, size=10))
-        return dict(font=font, fill=fill,
-                    alignment=Alignment(horizontal="left", vertical="center"),
-                    border=thin_border())
+    def data(self, status):
+        return dict(
+            font=Font(name=FONT_NAME, size=10),
+            fill=PatternFill("solid", fgColor=self.p.get(status, "FFFFFF")),
+            alignment=Alignment(horizontal="left", vertical="center"),
+            border=thin_border(),
+        )
+
+    def diff(self, status):
+        d = self.data(status)
+        d["font"] = Font(name=FONT_NAME, size=10, bold=True, color=self.p["DIFF_CELL"])
+        return d
 
 
 def apply_style(cell, style_dict):
@@ -261,8 +255,14 @@ DIFF_COLS = {"DIFF_Fields", "NAME_diff",
              "X_diff", "Y_diff", "Z_diff",
              "I_diff", "J_diff", "K_diff"}
 
+ORDERED_COLS = [
+    "Status",
+    "F1_Name", "F1_X", "F1_Y", "F1_Z", "F1_I", "F1_J", "F1_K",
+    "F2_Name", "F2_X", "F2_Y", "F2_Z", "F2_I", "F2_J", "F2_K",
+    "NAME_diff", "X_diff", "Y_diff", "Z_diff", "I_diff", "J_diff", "K_diff",
+    "DIFF_Fields",
+]
 
-# ─── Sheet writers ──────────────────────────────────────────────────────────────────
 
 def write_data_sheet(wb, title, df, table_name, sk):
     ws = wb.create_sheet(title)
@@ -270,26 +270,22 @@ def write_data_sheet(wb, title, df, table_name, sk):
         ws.cell(1, 1, "No data").font = Font(italic=True)
         return
 
-    ORDERED_COLS = ["Status",
-        "F1_Name","F1_X","F1_Y","F1_Z","F1_I","F1_J","F1_K",
-        "F2_Name","F2_X","F2_Y","F2_Z","F2_I","F2_J","F2_K",
-        "NAME_diff","X_diff","Y_diff","Z_diff","I_diff","J_diff","K_diff","DIFF_Fields"]
     cols = [c for c in ORDERED_COLS if c in df.columns]
-
     for ci, col in enumerate(cols, 1):
         apply_style(ws.cell(1, ci, col), sk.hdr())
-    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[1].height = 30
 
     for ri, (_, row) in enumerate(df.iterrows(), 2):
         status = str(row.get("Status", ""))
         for ci, col in enumerate(cols, 1):
             val = row[col]
-            if isinstance(val, float) and np.isnan(val): val = ""
-            is_diff = col in DIFF_COLS
-            is_meaningful = (is_diff and val not in ("", "-", 0, 0.0)
-                             and not (isinstance(val, float) and abs(val) < 1e-9))
+            if isinstance(val, float) and np.isnan(val):
+                val = ""
             c = ws.cell(ri, ci, val)
-            apply_style(c, sk.data(status, diff=is_meaningful))
+            is_diff = col in DIFF_COLS
+            is_meaningful = (is_diff and val not in ("", "–", 0, 0.0)
+                             and not (isinstance(val, float) and abs(val) < 1e-9))
+            apply_style(c, sk.diff(status) if is_meaningful else sk.data(status))
         ws.row_dimensions[ri].height = 18
 
     for ci, col in enumerate(cols, 1):
@@ -309,95 +305,106 @@ def write_overview(wb, df_all, cfg, sk):
     ws.title = "Overview"
     p = sk.p
 
-    for col, w in {"A": 3, "B": 30, "C": 12, "D": 10, "E": 38}.items():
+    for col, w in {"A": 3, "B": 30, "C": 12, "D": 10, "E": 38, "F": 22}.items():
         ws.column_dimensions[col].width = w
 
-    ws.merge_cells("B2:E2")
-    ws["B2"] = "Point Comparison Report"
+    ws.merge_cells("B2:F2")
+    ws["B2"] = "Отчёт: сравнение измерительных точек"
     ws["B2"].font = Font(name=FONT_NAME, size=16, bold=True, color=p["OVERVIEW_TITLE"])
     ws.row_dimensions[2].height = 26
 
-    ws.merge_cells("B3:E3")
-    ws["B3"] = (f"File 1: {cfg['file1']}  |  File 2: {cfg['file2']}  |  "
+    ws.merge_cells("B3:F3")
+    ws["B3"] = (f"Файл 1: {cfg['file1']}  |  Файл 2: {cfg['file2']}  |  "
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     ws["B3"].font = Font(name=FONT_NAME, size=10, italic=True, color="888888")
 
-    ws.merge_cells("B4:E4")
-    ws["B4"] = (f"XYZ tolerance: {cfg['coord_tol']} mm  |  "
-                f"IJK tolerance: {cfg['ijk_tol']}  |  "
-                f"Compare IJK: {'Yes' if cfg['compare_ijk'] else 'No'}")
+    ws.merge_cells("B4:F4")
+    ws["B4"] = (f"Допуск XYZ: {cfg['coord_tol']} мм  |  "
+                f"Допуск IJK: {cfg['ijk_tol']}  |  "
+                f"Сравнивать IJK: {'Да' if cfg['compare_ijk'] else 'Нет'}")
     ws["B4"].font = Font(name=FONT_NAME, size=10, italic=True, color="AAAAAA")
 
     hrow = 6
-    for ci, h in enumerate(["Status", "Count", "Colour", "Description"], 2):
+    for ci, h in enumerate(["Статус", "Кол-во", "Цвет", "Описание"], 2):
         apply_style(ws.cell(hrow, ci, h), sk.hdr())
     ws.row_dimensions[hrow].height = 24
 
     vc = df_all["Status"].value_counts()
-    for ri, code in enumerate(["MATCH","NAME_CHANGED","COORD_CHANGED","DELETED","ADDED"], hrow+1):
+    for ri, code in enumerate(["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED"], hrow + 1):
         cnt = vc.get(code, 0)
-        bg = p.get(code, "FFFFFF")
         ws.row_dimensions[ri].height = 20
         for ci, val in enumerate([code, cnt, "", STATUS_LABEL[code]], 2):
             c = ws.cell(ri, ci, val)
-            c.fill = PatternFill("solid", fgColor=bg)
+            c.fill = PatternFill("solid", fgColor=p.get(code, "FFFFFF"))
             c.border = thin_border()
             c.font = Font(name=FONT_NAME, size=11, bold=(ci in (2, 3)))
-            c.alignment = Alignment(
-                horizontal="center" if ci in (2, 3, 4) else "left",
-                vertical="center")
+            c.alignment = Alignment(horizontal="center" if ci in (2, 3, 4) else "left",
+                                    vertical="center")
 
     tr = hrow + 6
     ws.row_dimensions[tr].height = 20
-    for ci, val in enumerate(["TOTAL", len(df_all), "", "Total records"], 2):
+    for ci, val in enumerate(["TOTAL", len(df_all), "", "Всего записей"], 2):
         c = ws.cell(tr, ci, val)
         c.border = thin_border()
         c.font = Font(name=FONT_NAME, size=11, bold=True)
         c.alignment = Alignment(horizontal="center" if ci in (2, 3, 4) else "left",
                                  vertical="center")
 
-    # palette reference
+    # Palette reference
     pr = tr + 3
-    ws.merge_cells(f"B{pr}:E{pr}")
-    ws[f"B{pr}"] = "Colour Palette"
+    ws.merge_cells(f"B{pr}:F{pr}")
+    ws[f"B{pr}"] = "Цветовая палитра"
     ws[f"B{pr}"].font = Font(name=FONT_NAME, size=12, bold=True)
     ws.row_dimensions[pr].height = 20
     pr += 1
-    for ci, h in enumerate(["Key", "Hex", "Sample"], 2):
+    for ci, h in enumerate(["Ключ", "Hex", "Образец"], 2):
         apply_style(ws.cell(pr, ci, h), sk.hdr())
-    for ri2, (key, hex_) in enumerate(p.items(), pr+1):
+    for ri2, (k, v) in enumerate(p.items(), pr + 1):
         ws.row_dimensions[ri2].height = 18
-        ws.cell(ri2, 2, key).border = thin_border()
-        ws.cell(ri2, 3, hex_).border = thin_border()
+        ws.cell(ri2, 2, k).border = thin_border()
+        ws.cell(ri2, 3, v).border = thin_border()
         sc = ws.cell(ri2, 4, "")
-        sc.fill = PatternFill("solid", fgColor=hex_)
+        sc.fill = PatternFill("solid", fgColor=v)
         sc.border = thin_border()
 
+    # Column map
+    mr = pr + len(p) + 3
+    ws.merge_cells(f"B{mr}:F{mr}")
+    ws[f"B{mr}"] = "Маппинг колонок"
+    ws[f"B{mr}"].font = Font(name=FONT_NAME, size=12, bold=True)
+    ws.row_dimensions[mr].height = 20
+    mr += 1
+    for ci, h in enumerate(["Поле", "Файл 1", "Файл 2"], 2):
+        apply_style(ws.cell(mr, ci, h), sk.hdr())
+    for ri3, field in enumerate(FIELDS, mr + 1):
+        ws.row_dimensions[ri3].height = 18
+        ws.cell(ri3, 2, field).border = thin_border()
+        ws.cell(ri3, 3, cfg["col_map1"].get(field) or "—").border = thin_border()
+        ws.cell(ri3, 4, cfg["col_map2"].get(field) or "—").border = thin_border()
 
-# ─── Main ───────────────────────────────────────────────────────────────────────────────────
 
 def build_report(cfg):
-    print("Comparing points ...")
+    print("Comparing points …")
     df_all, df1, df2 = compare(cfg)
     sk = StyleKit(cfg["palette"])
+    vc = df_all["Status"].value_counts()
 
     wb = Workbook()
     write_overview(wb, df_all, cfg, sk)
-    write_data_sheet(wb, "All Results",    df_all,                          "AllResults",   sk)
-    write_data_sheet(wb, "Match",          df_all[df_all.Status=="MATCH"],  "Match",        sk)
-    write_data_sheet(wb, "Name Changed",   df_all[df_all.Status=="NAME_CHANGED"],  "NameChanged",  sk)
-    write_data_sheet(wb, "Coord Changed",  df_all[df_all.Status=="COORD_CHANGED"], "CoordChanged", sk)
-    write_data_sheet(wb, "Deleted",        df_all[df_all.Status=="DELETED"],        "Deleted",      sk)
-    write_data_sheet(wb, "Added",          df_all[df_all.Status=="ADDED"],          "Added",        sk)
+    write_data_sheet(wb, "All Results",     df_all,                          "AllResults",   sk)
+    write_data_sheet(wb, "✔ Match",         df_all[df_all.Status=="MATCH"].reset_index(drop=True),  "Match",        sk)
+    write_data_sheet(wb, "✎ Name Changed",  df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged",  sk)
+    write_data_sheet(wb, "⚠ Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged", sk)
+    write_data_sheet(wb, "✖ Deleted",       df_all[df_all.Status=="DELETED"].reset_index(drop=True),        "Deleted",      sk)
+    write_data_sheet(wb, "＋ Added",         df_all[df_all.Status=="ADDED"].reset_index(drop=True),          "Added",        sk)
 
     out = Path(cfg["output_file"])
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
 
-    print(f"\nReport saved -> {out}")
-    vc = df_all["Status"].value_counts()
+    print(f"\n Report saved → {out}")
     print("\n=== Summary ===")
-    for s in ["MATCH","NAME_CHANGED","COORD_CHANGED","DELETED","ADDED"]:
+    for s in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED"]:
         print(f"  {STATUS_LABEL[s]}: {vc.get(s, 0)}")
     print(f"  Total: {len(df_all)}")
     return df_all
