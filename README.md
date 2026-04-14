@@ -2,99 +2,57 @@
 
 Compare two lists of CMM / industrial measurement points (Name, X, Y, Z, I, J, K).
 
-## Features
-
-- Compare by **name** and **coordinates** simultaneously
-- Detects:
-  - ✔ **MATCH** – same name and coordinates (within tolerance)
-  - ✎ **NAME_CHANGED** – same coordinates, different name → shows `NAME_diff`
-  - ⚠ **COORD_CHANGED** – same name, different coordinates → shows `dX`, `dY`, `dZ`, `dI`, `dJ`, `dK` + `DIFF_Fields`
-  - ✖ **DELETED** – exists only in List 1
-  - ＋ **ADDED** – exists only in List 2
-- Configurable column mapping (any column names)
-- Compare two CSV files **or** two sheets of the same Excel file
-- Configurable XYZ and IJK tolerances
-- Fully configurable colour palette in reports
-- Diff cells highlighted in orange for instant visibility
-
 ## Files
 
 | File | Description |
-|---|---|
-| `compare_points_v3.py` | Python script — produces styled Excel report |
-| `ComparePoints_v3.bas` | VBA module — runs inside Excel, compares two sheets |
-| `PointsCompare_Template.xlsm` | Ready-to-use Excel template with all sheets + VBA instructions |
+|------|-------------|
+| `compare_points_interactive.py` | **Main script** – interactive CLI, asks for files and column mapping, outputs Excel report |
+| `compare_points_v3.py` | Batch/config-based Python script (no interactive prompts) |
+| `ComparePoints_v3.bas` | VBA module for Excel (import via Alt+F11 → Insert → Module) |
+| `PointsCompare_Template.xlsm` | Excel template with sample data, config sheet and instructions |
 
-## Python Usage
+## Quick Start
 
-Edit the `CONFIG` section at the top of `compare_points_v3.py`:
-
-```python
-CONFIG = {
-    "file1":  "path/to/file1.csv",   # or .xlsx
-    "sheet1": None,                   # sheet name or None
-    "file2":  "path/to/file2.csv",
-    "sheet2": None,
-    "col_map1": {
-        "Name": "Label",
-        "X": "X", "Y": "Y", "Z": "Z",
-        "I": "Vx", "J": "Vy", "K": "Vz",
-    },
-    "col_map2": {
-        "Name": "PointName",
-        "X": "X_mm", "Y": "Y_mm", "Z": "Z_mm",
-        "I": None, "J": None, "K": None,
-    },
-    "coord_tol": 0.05,
-    "ijk_tol":   0.001,
-    "compare_ijk": False,
-    "output_file": "output/report.xlsx",
-    "palette": {
-        "MATCH":         "C6EFCE",
-        "NAME_CHANGED":  "FFEB9C",
-        "COORD_CHANGED": "FFD7D7",
-        "DELETED":       "F4CCCC",
-        "ADDED":         "D9EAD3",
-        "DIFF_CELL":     "FF6600",
-        "HEADER_BG":     "4472C4",
-        "HEADER_FG":     "FFFFFF",
-        "OVERVIEW_TITLE":"1F3864",
-    },
-}
-```
-
-Run:
 ```bash
 pip install pandas openpyxl numpy
-python compare_points_v3.py
+python compare_points_interactive.py
 ```
 
-## Excel VBA Usage
+The script will guide you through 5 steps:
+1. Select the **original** file (Excel or CSV)
+2. Select the **new** file (Excel or CSV)
+3. Map columns to logical fields (Name / X / Y / Z / I / J / K)
+4. Set tolerances (XYZ, IJK) and options
+5. Choose output report path
 
-1. Open `PointsCompare_Template.xlsm` (or your own `.xlsm`)
-2. Press `Alt + F11` → Insert → Module
-3. Paste the full code from `ComparePoints_v3.bas`
-4. Close the editor
-5. Go to sheet **▶ ЗАПУСК**, right-click the green cell → **Assign Macro → ComparePoints**
-6. Click the button — results appear on `CMP_Overview`, `CMP_All Results`, etc.
+## Comparison Categories
 
-Settings (sheet names, column mapping, tolerances, colours) are read from the **⚙ Настройки** sheet — no code editing needed.
+| Status | Meaning |
+|--------|---------|
+| `MATCH` | Name and coordinates match within tolerance |
+| `NAME_CHANGED` | Same coordinates, different name |
+| `COORD_CHANGED` | Same name, different coordinates → dX/dY/dZ shown |
+| `DELETED` | Point exists only in the original list |
+| `ADDED` | Point exists only in the new list |
 
-## Output Sheets
+## Output Report (Excel)
 
-| Sheet | Content |
-|---|---|
-| `CMP_Overview` | Summary table with counts per status + colour legend |
-| `CMP_All Results` | All records with status + diff columns |
-| `CMP_Match` | Only matching points |
-| `CMP_Name Changed` | Points with same coords but different name |
-| `CMP_Coord Changed` | Points with same name but different coords |
-| `CMP_Deleted` | Points only in List 1 |
-| `CMP_Added` | Points only in List 2 |
+The report contains 7 sheets:
+- **Overview** – summary table with counts per category
+- **All Results** – all points with status and diff columns
+- **✔ Match** / **✎ Name Changed** / **⚠ Coord Changed** / **✖ Deleted** / **＋ Added** – filtered views
 
-## Requirements (Python)
+Diff columns (`X_diff`, `Y_diff`, `Z_diff`, `NAME_diff`, `DIFF_Fields`) are highlighted in **orange bold** when non-zero.
 
-- Python 3.8+
-- pandas
-- openpyxl
-- numpy
+## Supported Input Formats
+
+- `.csv` (auto-detect `,` or `;` separator)
+- `.xlsx`, `.xls`, `.xlsm` (sheet selection supported)
+
+## Requirements
+
+```
+pandas
+openpyxl
+numpy
+```
