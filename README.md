@@ -42,14 +42,17 @@ Result sheets are written into the same workbook with the `CMP_` prefix.
 The original source sheet is also updated in place:
 - row 1 becomes a grouped label row
 - `STATUS`
-- all `NEW_*` columns
+- appended `Name / X / Y / Z / I / J / K` columns for the new-sheet values
 - all `*_diff` columns
 
 Layout on the original sheet:
 - original source headers move from row 1 to row 2 when needed
-- row 1 labels the sections as `Original data`, `STATUS`, `New Data`, and `Difference`
+- row 1 labels the sections as `Original data`, `Comparison status`, `New Data`, and `Difference`
+- any active AutoFilter on the original sheet is cleared before writing results
 - result columns are appended after the last used source column
 - points that exist only in sheet 2 are appended as extra rows with `STATUS = NEW`
+- `X / Y / Z / I / J / K` display values use `0.000` formatting on the original sheet and in the report sheets
+- appended/group/status cells inherit the source sheet's font family, and the row-1 / status colors follow the reference workbook scheme
 
 ## GUI Flow
 
@@ -60,6 +63,8 @@ The GUI lets you:
 - set XYZ / IJK tolerances
 - run the comparison and view the summary without using the terminal
 - choose whether to also create the separate `CMP_*` report sheets
+
+When `CMP_*` report creation is enabled, the workbook also gets a `CMP_Close Points` sheet listing original/new point pairs whose 3D XYZ distance is within the selected XYZ tolerance. This is meant to highlight likely same points that were shifted slightly.
 
 ## Required Source Columns
 
@@ -89,10 +94,11 @@ On the original sheet writeback, list-2-only points are shown as appended rows w
 
 ## Output Report (Excel)
 
-The report contains 7 sheets:
+The report contains 8 sheets:
 - **`CMP_Overview`** – summary table with counts per category
 - **`CMP_All Results`** – all points with status and diff columns
 - **`CMP_Match`** / **`CMP_Name Changed`** / **`CMP_Coord Changed`** / **`CMP_Deleted`** / **`CMP_Added`** – filtered views
+- **`CMP_Close Points`** – pairs of original/new points whose 3D XYZ distance is within the selected XYZ tolerance
 
 If you disable report-sheet creation in the GUI, the original sheet still gets the appended result columns and `NEW` rows, but the separate filtered `CMP_*` views are not created.
 

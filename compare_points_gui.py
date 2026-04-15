@@ -218,10 +218,20 @@ class PointCompareApp:
         if self.new_sheet_var.get() not in self.sheet_names:
             self.new_sheet_var.set(default_new)
 
+    def _resolve_sheet_name(self, raw_name):
+        if raw_name in self.sheet_names:
+            return raw_name
+
+        normalized = raw_name.strip()
+        matches = [name for name in self.sheet_names if name.strip() == normalized]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     def run_compare(self):
         workbook_path = self.workbook_var.get().strip()
-        orig_sheet = self.orig_sheet_var.get().strip()
-        new_sheet = self.new_sheet_var.get().strip()
+        orig_sheet = self._resolve_sheet_name(self.orig_sheet_var.get())
+        new_sheet = self._resolve_sheet_name(self.new_sheet_var.get())
 
         ok, message = validate_workbook(workbook_path)
         if not ok:
@@ -234,8 +244,11 @@ class PointCompareApp:
             messagebox.showerror("Missing sheets", "Load a workbook with readable sheet names first.")
             return
 
-        if orig_sheet not in self.sheet_names or new_sheet not in self.sheet_names:
-            messagebox.showerror("Invalid sheet selection", "Choose both source sheets from the workbook list.")
+        if orig_sheet is None or new_sheet is None:
+            messagebox.showerror(
+                "Invalid sheet selection",
+                "Choose both source sheets from the workbook list. Hidden leading or trailing spaces in sheet names are now handled automatically when there is a unique match.",
+            )
             return
 
         try:
@@ -250,7 +263,10 @@ class PointCompareApp:
             return
 
         self.run_button.configure(state="disabled")
-        self.status_var.set("Running comparison and writing CMP_* sheets...")
+        if self.create_report_sheets_var.get():
+            self.status_var.set("Running comparison and updating the workbook plus CMP_* sheets...")
+        else:
+            self.status_var.set("Running comparison and updating the original sheet...")
         self.root.update_idletasks()
 
         try:
@@ -303,10 +319,14 @@ class PointCompareApp:
             f"  {meta['new_sheet']}: {', '.join(str(col) for col in result['new_columns'])}",
             "",
             "Original sheet updates:",
-            "  Row 1 contains grouped labels: Original data / STATUS / New Data / Difference.",
-            "  STATUS + NEW_* + *_diff columns appended after the last used source column.",
+            "  Any active filter on the original sheet is cleared before writing results.",
+            "  Row 1 contains grouped labels: Original data / Comparison status / New Data / Difference.",
+            "  STATUS + Name/X/Y/Z/I/J/K + *_diff columns appended after the last used source column.",
             "  New-only points from sheet 2 are appended as extra rows with STATUS = NEW.",
+            "  Coordinate columns are displayed with 3 decimal places.",
             "  Existing colors in the original source area are left unchanged.",
+            "",
+            f"Close point pairs within {meta['tol']:.3f} mm in 3D: {result['close_points_count']}",
             "",
             "Status counts:",
         ]
@@ -323,6 +343,7 @@ class PointCompareApp:
             lines.append("  CMP_Coord Changed")
             lines.append("  CMP_Deleted")
             lines.append("  CMP_Added")
+            lines.append("  CMP_Close Points")
         else:
             lines.append("  Not created. Only the original sheet was updated.")
 

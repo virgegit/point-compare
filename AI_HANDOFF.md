@@ -41,8 +41,13 @@ All implementations now use the same workbook-first model:
 `compare_ijk` is optional and extends the coordinate key with `I/J/K`.
 
 The GUI should stay thin and reuse the same comparison/report-writing path as the CLI to avoid drift between interfaces.
-The current Python flow also appends `STATUS`, all `NEW_*`, and all `*_diff` columns onto the original source sheet after its last used source column. If the source headers start on row 1, the sheet is shifted down so row 1 can hold grouped labels: `Original data`, `STATUS`, `New Data`, and `Difference`. Existing colors in the original source area should remain untouched.
+The current Python flow also appends `STATUS`, plain `Name/X/Y/Z/I/J/K` columns for the new-sheet values, and all `*_diff` columns onto the original source sheet after its last used source column. If the source headers start on row 1, the sheet is shifted down so row 1 can hold grouped labels: `Original data`, `Comparison status`, `New Data`, and `Difference`. Existing colors in the original source area should remain untouched.
 Rows that exist only in the new dataset are appended onto the original sheet as extra rows with `STATUS = NEW`.
+Original-sheet writeback now inherits the source sheet's font family and uses the reference workbook's row-1 / status-column color scheme (`MATCH` light theme, `NAME_CHANGED/COORD_CHANGED` yellow, `DELETED` red, `NEW` orange).
+Before writing onto the original sheet, any active AutoFilter is cleared and hidden filtered rows are unhidden.
+Coordinate display on the original sheet and report sheets now uses `0.000` formatting for `X/Y/Z/I/J/K` values.
+When the optional `CMP_*` report sheets are enabled, the workbook also gets `CMP_Close Points`, which lists original/new pairs whose 3D XYZ distance is within the selected XYZ tolerance so likely shifted duplicates can be reviewed.
+Some customer workbooks contain hidden Excel query/import tables. Because `openpyxl` does not preserve the full external-query package, the save path now normalizes query tables into regular worksheet tables and strips hidden `ExternalData_*` names from the workbook package after save so Excel will not open the file with a repair warning.
 
 ## Observed Constraints
 
