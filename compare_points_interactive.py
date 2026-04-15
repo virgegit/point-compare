@@ -18,6 +18,7 @@ Result categories:
 """
 
 import sys
+import shutil
 from copy import copy
 from pathlib import Path
 from datetime import datetime
@@ -754,7 +755,9 @@ def clean_saved_workbook_package(workbook_path):
                 data = clean_table_xml_bytes(data)
             dst_zip.writestr(info, data)
 
-    temp_path.replace(workbook_path)
+    # Use shutil.move instead of Path.replace so the operation works even when
+    # the temp directory and the workbook reside on different drives (WinError 17).
+    shutil.move(str(temp_path), str(workbook_path))
 
 def save_workbook_clean(wb, workbook_path):
     sanitize_external_query_metadata(wb)
