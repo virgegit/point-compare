@@ -23,13 +23,17 @@
 - The row-1 group labels and `STATUS` column colors now follow the reference workbook style: `MATCH` light theme, `NAME_CHANGED/COORD_CHANGED` yellow, `DELETED` red, `NEW` orange, with `Comparison status` and `Difference` blue and `New Data` yellow.
 - Any active filter on the original sheet is cleared before writeback, and filtered-hidden rows are unhidden.
 - `X/Y/Z/I/J/K` display values now use `0.000` number formatting on the original sheet and in the generated report sheets.
-- Optional report-sheet creation now includes `CMP_Close Points`, a near-duplicate overview of original/new point pairs whose 3D XYZ distance is within the selected XYZ tolerance.
+- Optional report-sheet creation now includes TWO proximity-review sheets:
+  - **`CMP_Close Points`** — ALL original/new pairs within the configurable `close_points_tol` (default 10 mm). Independent of the XYZ comparison tolerance. Adjustable in CLI and GUI.
+  - **`CMP_Nearest Points`** — For each original point, the SINGLE nearest new point regardless of distance. Helps identify shifted duplicates beyond the close-points threshold.
+- Both proximity sheets share the same columns: `ORIG_Name/X/Y/Z`, `NEW_Name/X/Y/Z`, `dX/dY/dZ`, `Distance_3D`, `Same_Name`.
 - Legacy workbooks that still contain the old `NEW_*` appended headers are rewritten in place instead of receiving a second appended output block.
 - GUI users can choose whether to also create the `CMP_*` report sheets. If that option is off, the original sheet still includes the appended comparison columns and `NEW` rows, but the separate filtered `CMP_*` views are not created.
 - Some real customer workbooks contain hidden query/import tables such as `AB3 FMK ALL ROW`. `openpyxl` drops the matching external-query package parts on save, so point-compare now post-processes the saved `.xlsx` package to remove hidden `ExternalData_*` names and convert `queryTable` definitions into regular worksheet tables, preventing Excel repair warnings on open.
 - Excel sheet names may include hidden leading or trailing spaces. The GUI now resolves sheet selections against the exact workbook names, including unique trim-matches such as `New point list `.
 - Duplicate names in the new dataset are currently lossy in Python because the name lookup keeps only one row per name.
 - The workspace Python bootstrap now works for this project, and the interactive script, GUI import path, launchers, and labeled original-sheet writeback were validated on 2026-04-14.
+- On 2026-04-15 the close-points tolerance was decoupled from the XYZ comparison tolerance. A new `close_points_tol` parameter (default 10 mm) is accepted by `run_comparison()`, prompted in the CLI, and exposed as a separate GUI field. The `CMP_Nearest Points` sheet was also added.
 
 ## Open Work
 

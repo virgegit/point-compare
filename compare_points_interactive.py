@@ -38,15 +38,17 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 #  DEFAULT SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 DEFAULTS = {
-    "coord_tol":   0.05,   # XYZ tolerance, mm
-    "ijk_tol":     0.001,  # IJK tolerance
-    "compare_ijk": False,  # include I/J/K in coordinate comparison?
+    "coord_tol":       0.05,   # XYZ tolerance, mm
+    "ijk_tol":         0.001,  # IJK tolerance
+    "compare_ijk":     False,  # include I/J/K in coordinate comparison?
+    "close_points_tol": 10.0,  # 3D distance threshold for close-points report, mm
 }
 
 PALETTE = {
     "MATCH":         "C6EFCE",
     "NAME_CHANGED":  "FFEB9C",
     "COORD_CHANGED": "FFD7D7",
+    "MOVED":         "E2EFDA",
     "DELETED":       "F4CCCC",
     "ADDED":         "D9EAD3",
     "DIFF_CELL":     "CC3300",
@@ -59,6 +61,7 @@ STATUS_LABEL = {
     "MATCH":         "✔  Match",
     "NAME_CHANGED":  "✎  Name Changed",
     "COORD_CHANGED": "⚠  Coordinates Changed",
+    "MOVED":         "↔  Moved",
     "DELETED":       "✖  Deleted (only in original)",
     "ADDED":         "＋ Added (only in new)",
 }
@@ -72,6 +75,7 @@ REPORT_SUFFIXES = [
     "Match",
     "Name Changed",
     "Coord Changed",
+    "Moved",
     "Deleted",
     "Added",
     "Close Points",
@@ -543,7 +547,7 @@ def write_overview(wb, title, df_all, meta):
     ws.row_dimensions[hrow].height = 24
 
     vc = df_all["Status"].value_counts()
-    for ri, code in enumerate(["MATCH","NAME_CHANGED","COORD_CHANGED","DELETED","ADDED"], hrow+1):
+    for ri, code in enumerate(["MATCH","NAME_CHANGED","COORD_CHANGED","MOVED","DELETED","ADDED"], hrow+1):
         cnt = vc.get(code, 0)
         bg  = PALETTE.get(code, "FFFFFF")
         ws.row_dimensions[ri].height = 22
@@ -580,6 +584,7 @@ def delete_report_sheets(wb, prefix):
             del wb[name]
 
 def build_close_points_report(df_orig, df_new, distance_tol):
+    """Find ALL original/new point pairs whose 3D XYZ distance is within distance_tol."""
     orig_xyz = df_orig[["X", "Y", "Z"]].to_numpy(dtype=float)
     new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
     results = []
@@ -634,11 +639,137 @@ def build_close_points_report(df_orig, df_new, distance_tol):
         .reset_index(drop=True)
     )
 
+def build_nearest_points_report(df_orig, df_new):
+    """For each original point, find the SINGLE nearest new point (regardless of tolerance)."""
+    orig_xyz = df_orig[["X", "Y", "Z"]].to_numpy(dtype=float)
+    new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
+    results = []
+
+    for orig_idx, orig_row in df_orig.iterrows():
+        orig_point = orig_xyz[orig_idx]
+        if np.isnan(orig_point).any():
+            continue
+
+        deltas = new_xyz - orig_point
+        valid_mask = ~np.isnan(deltas).any(axis=1)
+        if not valid_mask.any():
+            continue
+
+        valid_deltas = deltas[valid_mask]
+        distances = np.linalg.norm(valid_deltas, axis=1)
+        if len(distances) == 0:
+            continue
+
+        nearest_idx = int(np.argmin(distances))
+        all_valid_indices = np.where(valid_mask)[0]
+        new_idx = int(all_valid_indices[nearest_idx])
+        distance = float(distances[nearest_idx])
+
+        new_row = df_new.loc[new_idx]
+        results.append({
+            "ORIG_Name": orig_row["Name"],
+            "ORIG_X": orig_row["X"],
+            "ORIG_Y": orig_row["Y"],
+            "ORIG_Z": orig_row["Z"],
+            "NEW_Name": new_row["Name"],
+            "NEW_X": new_row["X"],
+            "NEW_Y": new_row["Y"],
+            "NEW_Z": new_row["Z"],
+            "dX": safe_delta(orig_row["X"], new_row["X"]),
+            "dY": safe_delta(orig_row["Y"], new_row["Y"]),
+            "dZ": safe_delta(orig_row["Z"], new_row["Z"]),
+            "Distance_3D": round(distance, 4),
+            "Same_Name": "Yes" if str(orig_row["Name"]) == str(new_row["Name"]) else "No",
+        })
+
+    if not results:
+        return pd.DataFrame(columns=[
+            "ORIG_Name", "ORIG_X", "ORIG_Y", "ORIG_Z",
+            "NEW_Name", "NEW_X", "NEW_Y", "NEW_Z",
+            "dX", "dY", "dZ", "Distance_3D", "Same_Name",
+        ])
+
+    return (
+        pd.DataFrame(results)
+        .sort_values(by=["Distance_3D", "ORIG_Name", "NEW_Name"], kind="stable")
+        .reset_index(drop=True)
+    )
+
+def link_moved_pairs(df_all, df_orig, df_new, close_points_tol):
+    """Pass 2: For DELETED originals + ADDED new points within close_points_tol, relabel both as MOVED.
+
+    Returns (updated_df_all, moved_pairs_list).
+    """
+    deleted_mask = df_all["Status"] == "DELETED"
+    added_mask = df_all["Status"] == "ADDED"
+
+    df_deleted = df_all[deleted_mask].copy()
+    df_added = df_all[added_mask].copy()
+
+    if df_deleted.empty or df_added.empty:
+        return df_all, []
+
+    orig_xyz = df_orig[["X", "Y", "Z"]].to_numpy(dtype=float)
+    new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
+
+    deleted_indices = list(df_deleted.index)
+    added_indices = list(df_added.index)
+
+    matched_deleted = set()
+    matched_added = set()
+    moved_pairs = []
+
+    for del_idx in deleted_indices:
+        orig_point = orig_xyz[del_idx]
+        if np.isnan(orig_point).any():
+            continue
+
+        best_new_idx = None
+        best_dist = float("inf")
+
+        for add_idx in added_indices:
+            if add_idx in matched_added:
+                continue
+            new_point = new_xyz[add_idx]
+            if np.isnan(new_point).any():
+                continue
+            dist = float(np.linalg.norm(orig_point - new_point))
+            if dist <= close_points_tol + 1e-12 and dist < best_dist:
+                best_dist = dist
+                best_new_idx = add_idx
+
+        if best_new_idx is not None:
+            matched_deleted.add(del_idx)
+            matched_added.add(best_new_idx)
+            orig_row = df_orig.loc[del_idx]
+            new_row = df_new.loc[best_new_idx]
+            moved_pairs.append({
+                "ORIG_Name": orig_row["Name"],
+                "ORIG_X": orig_row["X"],
+                "ORIG_Y": orig_row["Y"],
+                "ORIG_Z": orig_row["Z"],
+                "NEW_Name": new_row["Name"],
+                "NEW_X": new_row["X"],
+                "NEW_Y": new_row["Y"],
+                "NEW_Z": new_row["Z"],
+                "dX": safe_delta(orig_row["X"], new_row["X"]),
+                "dY": safe_delta(orig_row["Y"], new_row["Y"]),
+                "dZ": safe_delta(orig_row["Z"], new_row["Z"]),
+                "Distance_3D": round(best_dist, 4),
+            })
+
+    # Relabel matched rows in df_all
+    df_all = df_all.copy()
+    for idx in matched_deleted | matched_added:
+        df_all.at[idx, "Status"] = "MOVED"
+
+    return df_all, moved_pairs
+
 def write_close_points_sheet(wb, title, df_close, meta):
     ws = wb.create_sheet(title)
 
     ws.merge_cells("A1:M1")
-    ws["A1"] = f"Pairs of points within {meta['tol']:.3f} mm in 3D distance"
+    ws["A1"] = f"Pairs of points within {meta['close_points_tol']:.3f} mm in 3D distance"
     ws["A1"].font = Font(name=FONT_NAME, size=14, bold=True, color=PALETTE["TITLE"])
     ws.row_dimensions[1].height = 24
 
@@ -685,6 +816,57 @@ def write_close_points_sheet(wb, title, df_close, meta):
     ws.add_table(table)
     ws.freeze_panes = f"B{header_row + 1}"
 
+def write_nearest_points_sheet(wb, title, df_nearest, meta):
+    ws = wb.create_sheet(title)
+
+    ws.merge_cells("A1:M1")
+    ws["A1"] = "Nearest new point for each original point"
+    ws["A1"].font = Font(name=FONT_NAME, size=14, bold=True, color=PALETTE["TITLE"])
+    ws.row_dimensions[1].height = 24
+
+    ws.merge_cells("A2:M2")
+    ws["A2"] = (
+        f"Original sheet: {meta['orig_sheet']}   |   "
+        f"New sheet: {meta['new_sheet']}   |   "
+        f"Each original point is paired with its closest new point regardless of distance."
+    )
+    ws["A2"].font = Font(name=FONT_NAME, size=10, italic=True, color="888888")
+    ws.row_dimensions[2].height = 18
+
+    if df_nearest.empty:
+        ws.merge_cells("A4:M4")
+        ws["A4"] = "No nearest-point pairs could be computed (missing coordinates)."
+        ws["A4"].font = Font(name=FONT_NAME, size=11, italic=True)
+        return
+
+    nearest_cols = list(df_nearest.columns)
+    header_row = 4
+    for ci, col in enumerate(nearest_cols, 1):
+        ap(ws.cell(header_row, ci, col), hdr_style())
+    ws.row_dimensions[header_row].height = 24
+
+    for ri, (_, row) in enumerate(df_nearest.iterrows(), header_row + 1):
+        for ci, col in enumerate(nearest_cols, 1):
+            value = row[col]
+            if isinstance(value, float) and np.isnan(value):
+                value = ""
+            cell = ws.cell(ri, ci, value)
+            ap(cell, data_style("ADDED"))
+            if col.endswith(("_X", "_Y", "_Z")) or col in {"dX", "dY", "dZ", "Distance_3D"}:
+                cell.number_format = COORD_NUMBER_FORMAT
+        ws.row_dimensions[ri].height = 18
+
+    for ci, col in enumerate(nearest_cols, 1):
+        sample = [str(col)] + [str(df_nearest.iloc[r, ci - 1]) for r in range(min(300, len(df_nearest)))]
+        width = min(max(len(v) + 2 for v in sample), 24)
+        ws.column_dimensions[get_column_letter(ci)].width = width
+
+    ref = f"A{header_row}:{get_column_letter(len(nearest_cols))}{len(df_nearest) + header_row}"
+    table = Table(displayName="NearestPoints", ref=ref)
+    table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    ws.add_table(table)
+    ws.freeze_panes = f"B{header_row + 1}"
+
 def write_report_sheets(wb, df_all, meta, prefix=REPORT_PREFIX):
     delete_report_sheets(wb, prefix)
     df_close = meta["df_close"]
@@ -693,6 +875,7 @@ def write_report_sheets(wb, df_all, meta, prefix=REPORT_PREFIX):
     write_data_sheet(wb, f"{prefix}Match",        df_all[df_all.Status=="MATCH"].reset_index(drop=True),         "Match")
     write_data_sheet(wb, f"{prefix}Name Changed", df_all[df_all.Status=="NAME_CHANGED"].reset_index(drop=True),  "NameChanged")
     write_data_sheet(wb, f"{prefix}Coord Changed", df_all[df_all.Status=="COORD_CHANGED"].reset_index(drop=True), "CoordChanged")
+    write_data_sheet(wb, f"{prefix}Moved",        df_all[df_all.Status=="MOVED"].reset_index(drop=True),         "Moved")
     write_data_sheet(wb, f"{prefix}Deleted",      df_all[df_all.Status=="DELETED"].reset_index(drop=True),       "Deleted")
     write_data_sheet(wb, f"{prefix}Added",        df_all[df_all.Status=="ADDED"].reset_index(drop=True),         "Added")
     write_close_points_sheet(wb, f"{prefix}Close Points", df_close, meta)
@@ -982,15 +1165,26 @@ def run_comparison(
     ijk_tol,
     use_ijk,
     create_report_sheets=True,
+    close_points_tol=None,
 ):
     """Run the workbook comparison and write report sheets back into the workbook."""
+    if close_points_tol is None:
+        close_points_tol = DEFAULTS["close_points_tol"]
+
     df_orig_raw = read_sheet(workbook_path, orig_sheet)
     df_new_raw = read_sheet(workbook_path, new_sheet)
 
     df_orig = prepare_sheet(df_orig_raw, orig_sheet)
     df_new = prepare_sheet(df_new_raw, new_sheet)
+
+    # Pass 1: Standard comparison
     df_all = compare(df_orig, df_new, tol, ijk_tol, use_ijk)
-    df_close = build_close_points_report(df_orig, df_new, tol)
+
+    # Pass 2: Link DELETED+ADDED pairs within close_points_tol → MOVED
+    df_all, moved_pairs = link_moved_pairs(df_all, df_orig, df_new, close_points_tol)
+
+    # Build close-points report (includes MOVED pairs + any other close pairs)
+    df_close = build_close_points_report(df_orig, df_new, close_points_tol)
 
     meta = {
         "workbook": Path(workbook_path).name,
@@ -1004,6 +1198,8 @@ def run_comparison(
         "df_orig": df_orig,
         "df_new": df_new,
         "df_close": df_close,
+        "moved_pairs": moved_pairs,
+        "close_points_tol": close_points_tol,
     }
     keep_vba = Path(workbook_path).suffix.lower() == ".xlsm"
     wb = load_workbook(workbook_path, keep_vba=keep_vba)
@@ -1018,6 +1214,7 @@ def run_comparison(
         "new_columns": list(df_new_raw.columns),
         "create_report_sheets": create_report_sheets,
         "close_points_count": len(df_close),
+        "moved_count": len(moved_pairs),
     }
 
 
@@ -1074,12 +1271,13 @@ def interactive():
     tol     = ask_float("  XYZ tolerance (mm)", DEFAULTS["coord_tol"])
     ijk_tol = ask_float("  IJK tolerance",       DEFAULTS["ijk_tol"])
     use_ijk = ask_yn("  Include I/J/K in coordinate comparison?", DEFAULTS["compare_ijk"])
+    close_tol = ask_float("  Close-points 3D tolerance (mm)", DEFAULTS["close_points_tol"])
 
     print()
     hr()
     print("  Normalizing data ...")
     try:
-        result = run_comparison(workbook_path, orig_sheet, new_sheet, tol, ijk_tol, use_ijk)
+        result = run_comparison(workbook_path, orig_sheet, new_sheet, tol, ijk_tol, use_ijk, close_points_tol=close_tol)
     except ValueError as exc:
         print(f"  ⚠  {exc}")
         hr("═")
@@ -1093,10 +1291,11 @@ def interactive():
     hr()
     print("  RESULTS")
     hr()
-    for code in ["MATCH","NAME_CHANGED","COORD_CHANGED","DELETED","ADDED"]:
+    for code in ["MATCH","NAME_CHANGED","COORD_CHANGED","MOVED","DELETED","ADDED"]:
         print(f"  {STATUS_LABEL[code]:<40s}: {vc.get(code, 0):>5d}")
     print(f"  {'TOTAL':<40s}: {len(df_all):>5d}")
-    print(f"  {'Close 3D pairs within XYZ tolerance':<40s}: {result['close_points_count']:>5d}")
+    print(f"  {'Close 3D pairs (within tolerance)':<40s}: {result['close_points_count']:>5d}")
+    print(f"  {'Moved pairs (DELETED+ADDED within tolerance)':<40s}: {result['moved_count']:>5d}")
     hr()
 
     print(f"\n  ✅ Done. The original sheet was updated and CMP_* sheets were written to {Path(workbook_path).resolve()}")

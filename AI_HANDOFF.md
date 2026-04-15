@@ -46,7 +46,12 @@ Rows that exist only in the new dataset are appended onto the original sheet as 
 Original-sheet writeback now inherits the source sheet's font family and uses the reference workbook's row-1 / status-column color scheme (`MATCH` light theme, `NAME_CHANGED/COORD_CHANGED` yellow, `DELETED` red, `NEW` orange).
 Before writing onto the original sheet, any active AutoFilter is cleared and hidden filtered rows are unhidden.
 Coordinate display on the original sheet and report sheets now uses `0.000` formatting for `X/Y/Z/I/J/K` values.
-When the optional `CMP_*` report sheets are enabled, the workbook also gets `CMP_Close Points`, which lists original/new pairs whose 3D XYZ distance is within the selected XYZ tolerance so likely shifted duplicates can be reviewed.
+When the optional `CMP_*` report sheets are enabled, the workbook also gets two proximity-review sheets:
+
+- **`CMP_Close Points`** — ALL original/new pairs whose 3D XYZ distance is within the configurable `close_points_tol` (default 10 mm). This tolerance is independent of the XYZ comparison tolerance and is adjustable in both the CLI and GUI.
+- **`CMP_Nearest Points`** — For each original point, the SINGLE nearest new point regardless of distance. This helps identify potential shifted duplicates even when they exceed the close-points threshold.
+
+Both sheets share the same column schema (`ORIG_Name/X/Y/Z`, `NEW_Name/X/Y/Z`, `dX/dY/dZ`, `Distance_3D`, `Same_Name`) and formatting.
 Some customer workbooks contain hidden Excel query/import tables. Because `openpyxl` does not preserve the full external-query package, the save path now normalizes query tables into regular worksheet tables and strips hidden `ExternalData_*` names from the workbook package after save so Excel will not open the file with a repair warning.
 
 ## Observed Constraints

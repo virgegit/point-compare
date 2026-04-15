@@ -32,12 +32,13 @@ class PointCompareApp:
         self.new_sheet_var = tk.StringVar()
         self.coord_tol_var = tk.StringVar(value=str(DEFAULTS["coord_tol"]))
         self.ijk_tol_var = tk.StringVar(value=str(DEFAULTS["ijk_tol"]))
+        self.close_points_tol_var = tk.StringVar(value=str(DEFAULTS["close_points_tol"]))
         self.compare_ijk_var = tk.BooleanVar(value=DEFAULTS["compare_ijk"])
-        self.create_report_sheets_var = tk.BooleanVar(value=False)
+        self.create_report_sheets_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Select a workbook to begin.")
         self.summary_vars = {
             code: tk.StringVar(value="0")
-            for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED", "TOTAL"]
+            for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED", "TOTAL"]
         }
 
         self.sheet_names = []
@@ -118,25 +119,28 @@ class PointCompareApp:
         ttk.Label(frame, text="IJK tolerance").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(8, 0))
         ttk.Entry(frame, textvariable=self.ijk_tol_var, width=16).grid(row=1, column=1, sticky="w", pady=(8, 0))
 
+        ttk.Label(frame, text="Close-points 3D tolerance (mm)").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=(8, 0))
+        ttk.Entry(frame, textvariable=self.close_points_tol_var, width=16).grid(row=2, column=1, sticky="w", pady=(8, 0))
+
         ttk.Checkbutton(
             frame,
             text="Include I/J/K in coordinate comparison",
             variable=self.compare_ijk_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         ttk.Checkbutton(
             frame,
             text="Also create CMP_* report sheets",
             variable=self.create_report_sheets_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         actions = ttk.Frame(frame)
-        actions.grid(row=0, column=2, rowspan=4, sticky="e")
+        actions.grid(row=0, column=2, rowspan=6, sticky="e")
         self.run_button = ttk.Button(actions, text="Run Comparison", command=self.run_compare)
         self.run_button.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(frame, textvariable=self.status_var, foreground="#1f4e79").grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(12, 0)
+            row=5, column=0, columnspan=3, sticky="w", pady=(12, 0)
         )
 
     def _build_results_frame(self, parent):
@@ -150,7 +154,7 @@ class PointCompareApp:
         for index in range(3):
             summary_grid.columnconfigure(index, weight=1)
 
-        labels = ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED", "TOTAL"]
+        labels = ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED", "TOTAL"]
         for index, code in enumerate(labels):
             cell = ttk.Frame(summary_grid, padding=8)
             cell.grid(row=index // 3, column=index % 3, sticky="ew")
@@ -254,11 +258,12 @@ class PointCompareApp:
         try:
             coord_tol = float(self.coord_tol_var.get().strip())
             ijk_tol = float(self.ijk_tol_var.get().strip())
+            close_points_tol = float(self.close_points_tol_var.get().strip())
         except ValueError:
-            messagebox.showerror("Invalid tolerance", "Enter numeric values for XYZ and IJK tolerance.")
+            messagebox.showerror("Invalid tolerance", "Enter numeric values for XYZ, IJK, and close-points tolerance.")
             return
 
-        if coord_tol <= 0 or ijk_tol <= 0:
+        if coord_tol <= 0 or ijk_tol <= 0 or close_points_tol <= 0:
             messagebox.showerror("Invalid tolerance", "Tolerance values must be greater than zero.")
             return
 
@@ -278,6 +283,7 @@ class PointCompareApp:
                 ijk_tol=ijk_tol,
                 use_ijk=self.compare_ijk_var.get(),
                 create_report_sheets=self.create_report_sheets_var.get(),
+                close_points_tol=close_points_tol,
             )
         except Exception as exc:
             self.status_var.set("Comparison failed.")
@@ -301,7 +307,7 @@ class PointCompareApp:
         df_all = result["df_all"]
         meta = result["meta"]
         counts = df_all["Status"].value_counts()
-        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED"]:
+        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED"]:
             self.summary_vars[code].set(str(int(counts.get(code, 0))))
         self.summary_vars["TOTAL"].set(str(len(df_all)))
 
@@ -312,6 +318,7 @@ class PointCompareApp:
             f"XYZ tolerance: {meta['tol']}",
             f"IJK tolerance: {meta['ijk_tol']}",
             f"Compare IJK: {'Yes' if meta['use_ijk'] else 'No'}",
+            f"Close-points 3D tolerance: {meta['close_points_tol']}",
             f"Create CMP_* report sheets: {'Yes' if result['create_report_sheets'] else 'No'}",
             "",
             "Source columns detected:",
@@ -326,7 +333,8 @@ class PointCompareApp:
             "  Coordinate columns are displayed with 3 decimal places.",
             "  Existing colors in the original source area are left unchanged.",
             "",
-            f"Close point pairs within {meta['tol']:.3f} mm in 3D: {result['close_points_count']}",
+            f"Close point pairs within {meta['close_points_tol']:.3f} mm in 3D: {result['close_points_count']}",
+            f"Moved pairs (DELETED+ADDED within tolerance): {result['moved_count']}",
             "",
             "Status counts:",
         ]
@@ -344,6 +352,7 @@ class PointCompareApp:
             lines.append("  CMP_Deleted")
             lines.append("  CMP_Added")
             lines.append("  CMP_Close Points")
+            lines.append("  CMP_Nearest Points")
         else:
             lines.append("  Not created. Only the original sheet was updated.")
 
