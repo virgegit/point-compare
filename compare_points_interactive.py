@@ -585,12 +585,17 @@ def delete_report_sheets(wb, prefix):
 
 def build_close_points_report(df_orig, df_new, distance_tol):
     """Find ALL original/new point pairs whose 3D XYZ distance is within distance_tol."""
+    # Build positional numpy arrays — df_orig and df_new both have a
+    # reset_index(drop=True) index after prepare_sheet(), so positional
+    # indices 0..N-1 are safe to use here.
     orig_xyz = df_orig[["X", "Y", "Z"]].to_numpy(dtype=float)
     new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
     results = []
 
-    for orig_idx, orig_row in df_orig.iterrows():
-        orig_point = orig_xyz[orig_idx]
+    # Use enumerate() so pos_idx is always 0-based regardless of the
+    # DataFrame index label stored in orig_idx.
+    for pos_idx, (_, orig_row) in enumerate(df_orig.iterrows()):
+        orig_point = orig_xyz[pos_idx]
         if np.isnan(orig_point).any():
             continue
 
@@ -604,12 +609,12 @@ def build_close_points_report(df_orig, df_new, distance_tol):
         if not in_box.any():
             continue
 
-        candidate_indices = np.where(axis_mask)[0][in_box]
-        for new_idx, delta in zip(candidate_indices, candidate_deltas[in_box]):
+        candidate_positions = np.where(axis_mask)[0][in_box]
+        for new_pos, delta in zip(candidate_positions, candidate_deltas[in_box]):
             distance = float(np.linalg.norm(delta))
             if distance <= 1e-12 or distance > distance_tol + 1e-12:
                 continue
-            new_row = df_new.loc[new_idx]
+            new_row = df_new.iloc[new_pos]
             results.append({
                 "ORIG_Name": orig_row["Name"],
                 "ORIG_X": orig_row["X"],
@@ -645,8 +650,10 @@ def build_nearest_points_report(df_orig, df_new):
     new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
     results = []
 
-    for orig_idx, orig_row in df_orig.iterrows():
-        orig_point = orig_xyz[orig_idx]
+    # Use enumerate() so pos_idx is always 0-based regardless of the
+    # DataFrame index label stored in orig_idx.
+    for pos_idx, (_, orig_row) in enumerate(df_orig.iterrows()):
+        orig_point = orig_xyz[pos_idx]
         if np.isnan(orig_point).any():
             continue
 
@@ -660,12 +667,12 @@ def build_nearest_points_report(df_orig, df_new):
         if len(distances) == 0:
             continue
 
-        nearest_idx = int(np.argmin(distances))
-        all_valid_indices = np.where(valid_mask)[0]
-        new_idx = int(all_valid_indices[nearest_idx])
-        distance = float(distances[nearest_idx])
+        nearest_pos = int(np.argmin(distances))
+        all_valid_positions = np.where(valid_mask)[0]
+        new_pos = int(all_valid_positions[nearest_pos])
+        distance = float(distances[nearest_pos])
 
-        new_row = df_new.loc[new_idx]
+        new_row = df_new.iloc[new_pos]
         results.append({
             "ORIG_Name": orig_row["Name"],
             "ORIG_X": orig_row["X"],
@@ -709,8 +716,26 @@ def link_moved_pairs(df_all, df_orig, df_new, close_points_tol):
     if df_deleted.empty or df_added.empty:
         return df_all, []
 
+    # Build positional arrays from the *source* frames (already reset_index
+    # by prepare_sheet).  df_all index labels diverge from these after ADDED
+    # rows are appended, so we must NOT use df_all indices to address orig_xyz
+    # or new_xyz.
     orig_xyz = df_orig[["X", "Y", "Z"]].to_numpy(dtype=float)
     new_xyz = df_new[["X", "Y", "Z"]].to_numpy(dtype=float)
+
+    # df_all rows for DELETED entries correspond 1-to-1 with df_orig rows
+    # (they appear in the same order, first n_orig rows of df_all).  Build an
+    # explicit mapping from df_all index label → df_orig positional index.
+    n_orig = len(df_orig)
+    # The first n_orig rows of df_all are the original rows (in order).
+    orig_label_to_pos = {
+        label: pos for pos, label in enumerate(df_all.index[:n_orig])
+    }
+    # ADDED rows in df_all start at position n_orig; their df_all index labels
+    # map to df_new positional indices (ADDED rows are appended in df_new order).
+    added_label_to_pos = {
+        label: pos for pos, label in enumerate(df_all.index[n_orig:])
+    }
 
     deleted_indices = list(df_deleted.index)
     added_indices = list(df_added.index)
@@ -719,30 +744,37 @@ def link_moved_pairs(df_all, df_orig, df_new, close_points_tol):
     matched_added = set()
     moved_pairs = []
 
-    for del_idx in deleted_indices:
-        orig_point = orig_xyz[del_idx]
+    for del_label in deleted_indices:
+        orig_pos = orig_label_to_pos.get(del_label)
+        if orig_pos is None or orig_pos >= len(orig_xyz):
+            continue
+        orig_point = orig_xyz[orig_pos]
         if np.isnan(orig_point).any():
             continue
 
-        best_new_idx = None
+        best_add_label = None
         best_dist = float("inf")
 
-        for add_idx in added_indices:
-            if add_idx in matched_added:
+        for add_label in added_indices:
+            if add_label in matched_added:
                 continue
-            new_point = new_xyz[add_idx]
+            new_pos = added_label_to_pos.get(add_label)
+            if new_pos is None or new_pos >= len(new_xyz):
+                continue
+            new_point = new_xyz[new_pos]
             if np.isnan(new_point).any():
                 continue
             dist = float(np.linalg.norm(orig_point - new_point))
             if dist <= close_points_tol + 1e-12 and dist < best_dist:
                 best_dist = dist
-                best_new_idx = add_idx
+                best_add_label = add_label
 
-        if best_new_idx is not None:
-            matched_deleted.add(del_idx)
-            matched_added.add(best_new_idx)
-            orig_row = df_orig.loc[del_idx]
-            new_row = df_new.loc[best_new_idx]
+        if best_add_label is not None:
+            matched_deleted.add(del_label)
+            matched_added.add(best_add_label)
+            orig_row = df_orig.iloc[orig_pos]
+            new_pos2 = added_label_to_pos[best_add_label]
+            new_row = df_new.iloc[new_pos2]
             moved_pairs.append({
                 "ORIG_Name": orig_row["Name"],
                 "ORIG_X": orig_row["X"],
@@ -760,8 +792,8 @@ def link_moved_pairs(df_all, df_orig, df_new, close_points_tol):
 
     # Relabel matched rows in df_all
     df_all = df_all.copy()
-    for idx in matched_deleted | matched_added:
-        df_all.at[idx, "Status"] = "MOVED"
+    for label in matched_deleted | matched_added:
+        df_all.at[label, "Status"] = "MOVED"
 
     return df_all, moved_pairs
 
