@@ -11,13 +11,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from compare_points_interactive import (
-    DEFAULTS,
-    STATUS_LABEL,
-    list_sheets,
-    run_comparison,
-    validate_workbook,
-)
+from point_compare.schema import DEFAULTS, STATUS_LABEL
+from point_compare.validators import validate_workbook, list_sheets
+from point_compare.excel_io import run_comparison
 
 
 class PointCompareApp:
@@ -38,7 +34,7 @@ class PointCompareApp:
         self.status_var = tk.StringVar(value="Select a workbook to begin.")
         self.summary_vars = {
             code: tk.StringVar(value="0")
-            for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED", "TOTAL"]
+            for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "REPLACED?", "DELETED", "ADDED", "TOTAL"]
         }
 
         self.sheet_names = []
@@ -154,7 +150,7 @@ class PointCompareApp:
         for index in range(3):
             summary_grid.columnconfigure(index, weight=1)
 
-        labels = ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED", "TOTAL"]
+        labels = ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "REPLACED?", "DELETED", "ADDED", "TOTAL"]
         for index, code in enumerate(labels):
             cell = ttk.Frame(summary_grid, padding=8)
             cell.grid(row=index // 3, column=index % 3, sticky="ew")
@@ -293,21 +289,26 @@ class PointCompareApp:
             self.run_button.configure(state="normal")
 
         self._update_summary(result)
-        if result["create_report_sheets"]:
-            self.status_var.set(f"Finished. The original sheet and CMP_* sheets were updated in {Path(workbook_path).name}.")
-        else:
-            self.status_var.set(f"Finished. The original sheet was updated in {Path(workbook_path).name}.")
+        output_path = result.get("output_path", "")
+        output_file = Path(output_path).name if output_path else "unknown"
 
         if result["create_report_sheets"]:
-            messagebox.showinfo("Done", "Comparison finished. The original sheet and new CMP_* sheets were updated.")
+            self.status_var.set(f"Finished. New file created: {output_file}")
         else:
-            messagebox.showinfo("Done", "Comparison finished. The original sheet was updated.")
+            self.status_var.set(f"Finished. New file created: {output_file}")
+
+        done_msg = f"Comparison finished.\n\nNew file created: {output_file}"
+        if result["create_report_sheets"]:
+            done_msg += "\n\nThe original sheet and CMP_* sheets are included in the new file."
+        else:
+            done_msg += "\n\nThe comparison results are included in the new file."
+        messagebox.showinfo("Done", done_msg)
 
     def _update_summary(self, result):
         df_all = result["df_all"]
         meta = result["meta"]
         counts = df_all["Status"].value_counts()
-        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "MOVED", "DELETED", "ADDED"]:
+        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "REPLACED?", "DELETED", "ADDED"]:
             self.summary_vars[code].set(str(int(counts.get(code, 0))))
         self.summary_vars["TOTAL"].set(str(len(df_all)))
 
@@ -334,11 +335,11 @@ class PointCompareApp:
             "  Existing colors in the original source area are left unchanged.",
             "",
             f"Close point pairs within {meta['close_points_tol']:.3f} mm in 3D: {result['close_points_count']}",
-            f"Moved pairs (DELETED+ADDED within tolerance): {result['moved_count']}",
+            f"Replaced pairs (DELETED+ADDED within tolerance): {result['moved_count']}",
             "",
             "Status counts:",
         ]
-        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "DELETED", "ADDED"]:
+        for code in ["MATCH", "NAME_CHANGED", "COORD_CHANGED", "REPLACED?", "DELETED", "ADDED"]:
             lines.append(f"  {STATUS_LABEL[code]}: {counts.get(code, 0)}")
         lines.append(f"  TOTAL: {len(df_all)}")
         lines.append("")

@@ -17,12 +17,15 @@ Change-categories
 
 import pandas as pd
 import numpy as np
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 from pathlib import Path
 from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
+from point_compare.schema import LOGICAL_FIELDS
+from point_compare.excel_io import read_sheet, prepare_sheet, run_comparison
 
 # ════════════════════════════════════════════════════════════════
 #  CONFIGURATION  – edit this section before running
@@ -55,7 +58,14 @@ CONFIG = {
 # ════════════════════════════════════════════════════════════════
 
 
-FIELDS = ["Name", "X", "Y", "Z", "I", "J", "K"]
+STATUS_LABEL = {
+    "MATCH":         "✔ Match",
+    "NAME_CHANGED":  "✎ Name Changed",
+    "COORD_CHANGED": "⚠ Coordinates Changed",
+    "DELETED":       "✖ Deleted (only in sheet 1)",
+    "ADDED":         "＋ Added (only in sheet 2)",
+}
+
 REPORT_SUFFIXES = [
     "Overview",
     "All Results",
@@ -66,141 +76,21 @@ REPORT_SUFFIXES = [
     "Added",
 ]
 
-STATUS_LABEL = {
-    "MATCH":         "✔ Match",
-    "NAME_CHANGED":  "✎ Name Changed",
-    "COORD_CHANGED": "⚠ Coordinates Changed",
-    "DELETED":       "✖ Deleted (only in sheet 1)",
-    "ADDED":         "＋ Added (only in sheet 2)",
-}
 
-
-def read_source(path, sheet):
-    p = Path(path)
-    raw = pd.read_excel(p, sheet_name=sheet)
-    raw.columns = [str(c).strip() for c in raw.columns]
-
-    missing = [field for field in FIELDS if field not in raw.columns]
-    if missing:
-        missing_str = ", ".join(missing)
-        raise ValueError(
-            f"Required columns are missing on sheet '{sheet}': {missing_str}. "
-            "Fix the worksheet headers and run the tool again."
-        )
-
-    out = {}
-    for field in FIELDS:
-        out[field] = (raw[field].astype(str).str.strip()
-                      if field == "Name"
-                      else pd.to_numeric(raw[field], errors="coerce"))
-    return pd.DataFrame(out)
-
-
-def coord_key(row, tol, ijk_tol, use_ijk):
-    def rnd(v, t):
-        try:
-            return int(round(float(v) / t))
-        except (TypeError, ValueError):
-            return None
-    k = (rnd(row["X"], tol), rnd(row["Y"], tol), rnd(row["Z"], tol))
-    if use_ijk:
-        k += (rnd(row["I"], ijk_tol), rnd(row["J"], ijk_tol), rnd(row["K"], ijk_tol))
-    return k
-
-
-def fmt(v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "–"
-    if isinstance(v, float):
-        return f"{v:.4f}"
-    return str(v)
-
-
-def delta(v1, v2):
-    try:
-        return round(float(v2) - float(v1), 4)
-    except (TypeError, ValueError):
-        return np.nan
-
-
-def build_result_row(status, r1, r2):
-    row = {"Status": status}
-    for f in FIELDS:
-        row[f"F1_{f}"] = r1[f] if r1 is not None else np.nan
-        row[f"F2_{f}"] = r2[f] if r2 is not None else np.nan
-
-    diff_fields = []
-    for f in FIELDS:
-        v1 = row[f"F1_{f}"]
-        v2 = row[f"F2_{f}"]
-        if f == "Name":
-            if status == "NAME_CHANGED":
-                row["NAME_diff"] = f"{fmt(v1)} → {fmt(v2)}"
-                diff_fields.append("Name")
-            else:
-                row["NAME_diff"] = ""
-        else:
-            d = delta(v1, v2)
-            row[f"{f}_diff"] = d
-            if status == "COORD_CHANGED" and not (isinstance(d, float) and np.isnan(d)) and abs(d) > 1e-9:
-                diff_fields.append(f)
-
-    row["DIFF_Fields"] = ", ".join(diff_fields) if diff_fields else ""
-    return row
-
-
-def compare(cfg):
-    tol     = cfg["coord_tol"]
-    ijk_tol = cfg["ijk_tol"]
-    use_ijk = cfg["compare_ijk"]
-
-    df1 = read_source(cfg["workbook_file"], cfg["sheet1"])
-    df2 = read_source(cfg["workbook_file"], cfg["sheet2"])
-
-    name_to_i2 = {r["Name"]: i for i, r in df2.iterrows()}
-    coord_to_i2 = {}
-    for i, r in df2.iterrows():
-        k = coord_key(r, tol, ijk_tol, use_ijk)
-        coord_to_i2.setdefault(k, []).append(i)
-
-    matched2 = set()
-    results  = []
-
-    for _, r1 in df1.iterrows():
-        name1 = r1["Name"]
-        ck1   = coord_key(r1, tol, ijk_tol, use_ijk)
-        by_name  = name1 in name_to_i2
-        by_coord = ck1 in coord_to_i2
-
-        if by_name:
-            i2 = name_to_i2[name1]
-            r2 = df2.loc[i2]
-            matched2.add(i2)
-            ck2 = coord_key(r2, tol, ijk_tol, use_ijk)
-            status = "MATCH" if ck1 == ck2 else "COORD_CHANGED"
-            results.append(build_result_row(status, r1, r2))
-        elif by_coord:
-            for i2 in coord_to_i2[ck1]:
-                if i2 not in matched2:
-                    matched2.add(i2)
-                    results.append(build_result_row("NAME_CHANGED", r1, df2.loc[i2]))
-                    break
-            else:
-                results.append(build_result_row("DELETED", r1, None))
-        else:
-            results.append(build_result_row("DELETED", r1, None))
-
-    for i2, r2 in df2.iterrows():
-        if i2 not in matched2:
-            results.append(build_result_row("ADDED", None, r2))
-
-    return pd.DataFrame(results), df1, df2
+def map_result_columns(df_all):
+    """Map interactive.py's ORIG_*/NEW_* columns to v3's F1_*/F2_* convention."""
+    mapping = {}
+    for logical_field in LOGICAL_FIELDS:
+        mapping[f"ORIG_{logical_field}"] = f"F1_{logical_field}"
+        mapping[f"NEW_{logical_field}"] = f"F2_{logical_field}"
+    return df_all.rename(columns=mapping)
 
 
 FONT_NAME = "Calibri"
 
 
 def thin_border(color="CCCCCC"):
+    from openpyxl.styles import Border, Side
     s = Side(style="thin", color=color)
     return Border(left=s, right=s, top=s, bottom=s)
 
@@ -361,11 +251,27 @@ def write_overview(wb, title, df_all, cfg, sk):
 
 def build_report(cfg):
     print("Comparing points …")
-    df_all, df1, df2 = compare(cfg)
+
+    workbook_file = cfg["workbook_file"]
+    result = run_comparison(
+        workbook_file,
+        cfg["sheet1"],
+        cfg["sheet2"],
+        cfg["coord_tol"],
+        cfg["ijk_tol"],
+        cfg["compare_ijk"],
+        create_report_sheets=False,
+    )
+
+    df_all = result["df_all"]
+
+    # Map column names from interactive convention to v3 convention
+    df_all = map_result_columns(df_all)
+
     sk = StyleKit(cfg["palette"])
     vc = df_all["Status"].value_counts()
 
-    out = Path(cfg["workbook_file"])
+    out = Path(workbook_file)
     wb = load_workbook(out, keep_vba=(out.suffix.lower() == ".xlsm"))
     for suffix in REPORT_SUFFIXES:
         name = f"{cfg['report_prefix']}{suffix}"

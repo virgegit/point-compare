@@ -2,10 +2,12 @@
 
 ## Snapshot
 
-- Project type: Excel worksheet comparison utility for measurement points
-- Primary runtime: `compare_points_interactive.py`
-- Alternate runtimes: `compare_points_v3.py`, `ComparePoints_v3.bas`
-- Main artifact: `CMP_*` sheets written back into the source workbook and grouped by `MATCH / NAME_CHANGED / COORD_CHANGED / DELETED / ADDED`
+- Project type: Excel worksheet comparison utility for CMM measurement points (Name, X, Y, Z, I, J, K)
+- Primary runtime: `compare_points_gui.py` (Tkinter GUI)
+- Alternate runtimes: `compare_points_v3.py` (batch/config), `ComparePoints_v3.bas` (VBA, legacy)
+- Shared library: `point_compare/` package with schema, core logic, validators, styles, excel_io modules
+- Main artifact: **New timestamped output file** (`filename_CMP_YYYYMMDD_HHMMSS.xlsx`) with updated original sheet + `CMP_*` report sheets
+- Comparison categories: MATCH / NAME_CHANGED / COORD_CHANGED / REPLACED? / DELETED / ADDED
 
 ## Durable Notes
 
@@ -35,7 +37,19 @@
 - The workspace Python bootstrap now works for this project, and the interactive script, GUI import path, launchers, and labeled original-sheet writeback were validated on 2026-04-14.
 - On 2026-04-15 the close-points tolerance was decoupled from the XYZ comparison tolerance. A new `close_points_tol` parameter (default 10 mm) is accepted by `run_comparison()`, prompted in the CLI, and exposed as a separate GUI field. The `CMP_Nearest Points` sheet was also added.
 
+## Recent Changes (Session 2026-04-18)
+
+- **Refactored into shared library** (`point_compare/` package) — eliminated 600+ lines of duplication across 3 entry points (interactive CLI, batch, GUI). All implementations now use identical comparison/styling logic
+- **Output file mode** — comparison creates new timestamped file (`filename_CMP_YYYYMMDD_HHMMSS.xlsx`) instead of modifying original workbook. Original file is always safe
+- **REPLACED? status** — new comparison category for DELETED+ADDED pairs within `close_points_tol`. Distinct from DELETED/ADDED: indicates original point was deleted AND a nearby new point exists as likely replacement
+- **Fixed link_moved_pairs() bug** — was using incorrect position mapping through df_orig/df_new, causing many REPLACED? pairs to be missed. Now uses ORIG_*/NEW_* values directly from df_all
+- **Unified colors** — REPLACED?, COORD_CHANGED, NAME_CHANGED all use yellow (same visual "changed" category). MATCH light blue, DELETED red, ADDED orange
+- **Archived interactive CLI** — moved `compare_points_interactive.py` to `archived/` since GUI is superior (interactive, summary feedback, no terminal needed)
+- **Color consistency** — all three statuses (REPLACED?, COORD_CHANGED, NAME_CHANGED) now display same yellow in both PALETTE and STATUS_FILLS
+
 ## Open Work
 
-- Add fixtures/tests for the comparison categories and for duplicate-name behavior.
-- Decide whether duplicate names should fail fast, warn, or remain last-match-wins.
+- Add fixtures/tests for all six comparison categories (MATCH, NAME_CHANGED, COORD_CHANGED, REPLACED?, DELETED, ADDED)
+- Implement duplicate-name warning/error to surface lossy behavior
+- Update VBA implementation to match current Python changes (REPLACED? status, output-file mode, color scheme)
+- Add concurrent batch-processing tests for multiple workbooks
